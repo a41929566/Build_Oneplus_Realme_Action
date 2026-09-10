@@ -646,7 +646,8 @@ jobs:
           ESCAPED_SUFFIX=$(printf '%s\n' "$DEFAULT_SUFFIX" | sed 's:[\/&]:\\&:g')
           sudo sed -i "s/-4k/$ESCAPED_SUFFIX/g" ./common/arch/arm64/configs/gki_defconfig
           sed -i 's/${scm_version}//' ./common/scripts/setlocalversion
-          sudo sed -i 's/^UTS_RELEASE.*/UTS_RELEASE := 6.6.89-android15-8-g7e1f3c083cc6-abogki467167594-4k/' ./common/Makefile
+          sudo sed -i 's/^filechk_utsrelease = .*/filechk_utsrelease = 6.6.89-android15-8-g7e1f3c083cc6-abogki467167594-4k/' ./common/Makefile
+          grep -n '^filechk_utsrelease' ./common/Makefile
           echo "KBUILD_BUILD_USER=kleaf" >> $GITHUB_ENV
           echo "KBUILD_BUILD_HOST=build-host" >> $GITHUB_ENV
 
