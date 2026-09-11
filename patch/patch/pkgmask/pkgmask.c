@@ -1,39 +1,40 @@
-// 许可证：GPL-2.0
+// SPDX-License-Identifier: GPL-2.0
 /*
- * pkgmask - 用于 Android arm64 / GKI 6.6 的内建内核软件包隐藏功能
+ * pkgmask - built-in kernel package hiding for Android arm64 / GKI 6.6
  *
- * 内置于内核镜像中（obj-y），而非可加载模块。这可以避免
- * 在自编译内核上构建LKM时遇到的每一种insmod侧失败模式
- * 内核：无版本魔法/CRC校验，无未定义导出问题，无
- * 间接调用上的CFI问题，无启动时的加载顺序问题。
+ * Built into the kernel image (obj-y), NOT a loadable module.
  *
- * 它的作用（与PathMask项目采用相同且经过验证的设计）：
- *   1. getdents64 目录项过滤（防扫描的目录列表）
- *   2. inode_permission / vfs_getattr 钩子（阻止 stat / open / access 操作）
- *   3. 以 __arm64_sys_* 路径钩子作为后备方案（ThinLTO内联路径）
+ * Mechanism (v3):
+ *   1. getdents64 kretprobe   - directory entry filtering (scan-proof listing)
+ *   2. LSM hooks              - inode_permission / inode_getattr deny
+ *                               (stat / open / access -> ENOENT)
+ *   3. __arm64_sys_* path kretprobes as fallback (optional, off by default)
  *
- * 隐式路径的零宽度字符变体解析后会指向同一个 inode，
- * 因此基于 (dev, ino) 的匹配会将所有拼写形式一视同仁地隐藏。
+ * v3 change: kretprobes on inode_permission / vfs_getattr are removed.
+ * On kernels where SUSFS (or similar) permanently ftrace-hooks those VFS
+ * functions, register_kretprobe returns -EINVAL and the hide never engages.
+ * LSM hooks use an independent hook chain and keep working in that setup.
  *
- * 配置接口（实时生效，无需重启）：
- *   /sys/module/pkgmask/parameters/target_paths   以逗号分隔的绝对路径
- *   /sys/module/pkgmask/parameters/deny_uids      以逗号分隔的UID列表
- *   /sys/module/pkgmask/parameters/allow_uids     以逗号分隔的UID列表
+ * getdents64 / syscall kretprobes are registered at most once and never
+ * unregistered: reload only refreshes the match data.  Handlers consult the
+ * live config on every call, so re-applying config never touches kprobe
+ * registration (avoids -EINVAL/-EEXIST on re-registration).
+ *
+ * Zero-width character variants of a hidden path resolve to the same inode,
+ * so matching on (dev, ino) hides every spelling identically.
+ *
+ * Configuration interface (live, no reboot):
+ *   /sys/module/pkgmask/parameters/target_paths   comma-separated abs paths
+ *   /sys/module/pkgmask/parameters/deny_uids      comma-separated UIDs
+ *   /sys/module/pkgmask/parameters/allow_uids     comma-separated UIDs
  *   /sys/module/pkgmask/parameters/scope_mode     global | deny | allow
  *   /sys/module/pkgmask/parameters/hide_dirents   0/1
  *   /sys/module/pkgmask/parameters/hook_perm      0/1
  *   /sys/module/pkgmask/parameters/hook_getattr   0/1
  *   /sys/module/pkgmask/parameters/hook_getdents  0/1
- *   /sys/module/pkgmask/parameters/syscall_hooks  逗号分隔列表或为空
- *   /sys/module/pkgmask/parameters/reload         写入“1”以（重新）应用
- *   /sys/module/pkgmask/parameters/status         只读状态转储
- *
- * 在启动时，该模块仅注册了两个纯内存读取挂钩
- * （inode_permission + vfs_getattr），且目标列表为空，这是一
- * 对每个进程均无操作。配置将在稍后通过 sysfs 应用
- * （通常由配对的 KernelSU 配置模块的 service.sh 脚本）执行
- * 触发 `reload` 并在普通进程中解析目标路径
- * 上下文仅在 /data 挂载时执行一次。
+ *   /sys/module/pkgmask/parameters/syscall_hooks  comma list or empty
+ *   /sys/module/pkgmask/parameters/reload         write "1" to (re)apply
+ *   /sys/module/pkgmask/parameters/status         read-only state dump
  */
 
 #include <linux/module.h>
@@ -53,6 +54,8 @@
 #include <linux/uidgid.h>
 #include <linux/uaccess.h>
 #include <linux/ptrace.h>
+#include <linux/security.h>
+#include <linux/lsm_hooks.h>
 #include <asm/ptrace.h>
 #include <asm/syscall.h>
 #include <asm/unistd.h>
@@ -60,7 +63,7 @@
 /*
  * close_fd() is defined in fs/file.c (EXPORT_SYMBOL) but its declaration
  * lives in fs/file.h, an internal header drivers cannot include.
- * 在此处显式声明。
+ * Declare it explicitly here.
  */
 extern int close_fd(unsigned int fd);
 
@@ -74,19 +77,19 @@ extern int close_fd(unsigned int fd);
 #define GETDENTS_BUF_LIMIT 65536u
 #define ANDROID_USER_OFFSET 100000u
 
-/* ------------------------- 可调参数（sysfs） ------------------------- */
+/* ------------------------- tunables (sysfs) ------------------------- */
 
 static bool hide_dirents = true;
 module_param(hide_dirents, bool, 0644);
-MODULE_PARM_DESC(hide_dirents, "从getdents64的目录列表中隐藏目标");
+MODULE_PARM_DESC(hide_dirents, "Hide target from getdents64 listings");
 
 static bool hook_perm = true;
 module_param(hook_perm, bool, 0644);
-MODULE_PARM_DESC(hook_perm, "Enable inode_permission kretprobe");
+MODULE_PARM_DESC(hook_perm, "Enable inode_permission LSM hook");
 
 static bool hook_getattr = true;
 module_param(hook_getattr, bool, 0644);
-MODULE_PARM_DESC(hook_getattr, "Enable vfs_getattr kretprobe");
+MODULE_PARM_DESC(hook_getattr, "Enable inode_getattr LSM hook");
 
 static bool hook_getdents;
 module_param(hook_getdents, bool, 0644);
@@ -220,101 +223,59 @@ static inline bool should_hide_for_current(void)
 	       is_in_uid_list(fsuid);
 }
 
-/* --------------------- inode_permission / vfs_getattr --------------------- */
+/* --------------------- LSM hooks (inode_permission / inode_getattr) --------------------- */
 
-#define PM_PERM_INODE_REG 1
+static bool lsm_registered;
 
-static struct kretprobe kp_inode_perm;
-static struct kretprobe kp_inode_getattr;
-static bool perm_registered;
-static bool getattr_registered;
-
-struct inode_perm_data {
-	unsigned long matched;
-};
-
-static int perm_inode_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
+static int pkgmask_lsm_inode_permission(struct inode *inode, int mask)
 {
-	struct inode_perm_data *d = (struct inode_perm_data *)ri->data;
-	struct inode *inode = (struct inode *)regs->regs[PM_PERM_INODE_REG];
+	if (!lsm_registered || !target_count || !hook_perm)
+		return 0;
 
-	d->matched = should_hide_for_current() && is_target_inode(inode);
+	if (should_hide_for_current() && is_target_inode(inode))
+		return -ENOENT;
+
 	return 0;
 }
 
-static int perm_exit(struct kretprobe_instance *ri, struct pt_regs *regs)
+static int pkgmask_lsm_inode_getattr(struct mnt_idmap *idmap,
+				     const struct path *path)
 {
-	struct inode_perm_data *d = (struct inode_perm_data *)ri->data;
-
-	if (d->matched)
-		regs_set_return_value(regs, -ENOENT);
-	return 0;
-}
-
-static int getattr_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
-{
-	struct inode_perm_data *d = (struct inode_perm_data *)ri->data;
-	struct path *path = (struct path *)regs->regs[0];
 	struct inode *inode = NULL;
+
+	if (!lsm_registered || !target_count || !hook_getattr)
+		return 0;
 
 	if (path && path->dentry)
 		inode = d_inode(path->dentry);
 
-	d->matched = should_hide_for_current() && is_target_inode(inode);
+	if (should_hide_for_current() && is_target_inode(inode))
+		return -ENOENT;
+
 	return 0;
 }
 
-static int getattr_exit(struct kretprobe_instance *ri, struct pt_regs *regs)
-{
-	struct inode_perm_data *d = (struct inode_perm_data *)ri->data;
+static struct security_hook_list pkgmask_hooks[] __ro_after_init = {
+	LSM_HOOK_INIT(inode_permission, pkgmask_lsm_inode_permission),
+	LSM_HOOK_INIT(inode_getattr, pkgmask_lsm_inode_getattr),
+};
 
-	if (d->matched)
-		regs_set_return_value(regs, -ENOENT);
-	return 0;
-}
+static const struct lsm_id pkgmask_lsmid __initconst = {
+	.name = "pkgmask",
+	.id = 0,
+};
 
-static int register_perm_getattr(void)
+static int __init register_lsm_hooks(void)
 {
 	int ret;
 
-	if (hook_perm && !perm_registered) {
-		kp_inode_perm.kp.symbol_name = "inode_permission";
-		kp_inode_perm.entry_handler = perm_inode_entry;
-		kp_inode_perm.handler = perm_exit;
-		kp_inode_perm.data_size = sizeof(struct inode_perm_data);
-		kp_inode_perm.maxactive = 40;
-		ret = register_kretprobe(&kp_inode_perm);
-		if (ret) {
-			pr_warn(PM_LOG_PREFIX
-				"register_kretprobe(inode_permission) failed: %d\n",
-				ret);
-			return ret;
-		}
-		perm_registered = true;
-		pr_info(PM_LOG_PREFIX "hooked inode_permission\n");
+	ret = security_add_hooks(pkgmask_hooks, ARRAY_SIZE(pkgmask_hooks),
+				 &pkgmask_lsmid);
+	if (ret) {
+		pr_warn(PM_LOG_PREFIX "security_add_hooks failed: %d\n", ret);
+		return ret;
 	}
-
-	if (hook_getattr && !getattr_registered) {
-		kp_inode_getattr.kp.symbol_name = "vfs_getattr";
-		kp_inode_getattr.entry_handler = getattr_entry;
-		kp_inode_getattr.handler = getattr_exit;
-		kp_inode_getattr.data_size = sizeof(struct inode_perm_data);
-		kp_inode_getattr.maxactive = 40;
-		ret = register_kretprobe(&kp_inode_getattr);
-		if (ret) {
-			pr_warn(PM_LOG_PREFIX
-				"register_kretprobe(vfs_getattr) failed: %d\n",
-				ret);
-			if (perm_registered) {
-				unregister_kretprobe(&kp_inode_perm);
-				perm_registered = false;
-			}
-			return ret;
-		}
-		getattr_registered = true;
-		pr_info(PM_LOG_PREFIX "hooked vfs_getattr\n");
-	}
-
+	lsm_registered = true;
 	return 0;
 }
 
@@ -339,7 +300,8 @@ static int getdents_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
 	d->dirent = NULL;
 	d->kbuf = NULL;
 	d->kbuf_len = 0;
-	d->scoped = should_hide_for_current();
+	d->scoped = (hide_dirents && hook_getdents) &&
+		    should_hide_for_current();
 
 	if (!d->scoped || !user_regs)
 		return 0;
@@ -449,16 +411,7 @@ static int register_getdents(void)
 		return ret;
 	}
 	getdents_registered = true;
-	pr_info(PM_LOG_PREFIX "hooked __arm64_sys_getdents64\n");
 	return 0;
-}
-
-static void unregister_getdents(void)
-{
-	if (getdents_registered) {
-		unregister_kretprobe(&kp_getdents);
-		getdents_registered = false;
-	}
 }
 
 /* --------------------------- syscall fallback --------------------------- */
@@ -681,21 +634,6 @@ static void register_syscall_hooks(void)
 			continue;
 		}
 		p->registered = true;
-		pr_info(PM_LOG_PREFIX "hooked %s\n", p->symbol);
-	}
-}
-
-static void unregister_syscall_hooks(void)
-{
-	unsigned int i;
-
-	for (i = 0; i < ARRAY_SIZE(pm_syscall_probes); i++) {
-		struct pm_syscall_probe *p = &pm_syscall_probes[i];
-
-		if (p->registered) {
-			unregister_kretprobe(&p->rp);
-			p->registered = false;
-		}
 	}
 }
 
@@ -740,10 +678,6 @@ static int add_target_path(const char *path_name)
 	targets[target_count].inode_ok = inode->i_ino != 0;
 	strscpy(targets[target_count].path, path_name,
 		sizeof(targets[target_count].path));
-	pr_info(PM_LOG_PREFIX "target[%u] %s ino=%llu dev=%u:%u\n",
-		target_count, path_name, targets[target_count].ino,
-		MAJOR(targets[target_count].dev),
-		MINOR(targets[target_count].dev));
 	target_count++;
 	path_put(&path);
 
@@ -836,20 +770,22 @@ static int resolve_target_paths(const char *paths)
 
 static int parse_scope_mode(void)
 {
-	if (!strcmp(scope_mode, "global")) {
+	char *m = strim(scope_mode);
+
+	if (!strcmp(m, "global")) {
 		active_scope = SCOPE_GLOBAL;
 		return 0;
 	}
-	if (!strcmp(scope_mode, "deny")) {
+	if (!strcmp(m, "deny")) {
 		active_scope = SCOPE_DENY;
 		return 0;
 	}
-	if (!strcmp(scope_mode, "allow")) {
+	if (!strcmp(m, "allow")) {
 		active_scope = SCOPE_ALLOW;
 		return 0;
 	}
 
-	pr_err(PM_LOG_PREFIX "unsupported scope_mode=%s\n", scope_mode);
+	pr_err(PM_LOG_PREFIX "unsupported scope_mode=%s\n", m);
 	return -EINVAL;
 }
 
@@ -912,27 +848,16 @@ static void reset_state(void)
 	allow_uid_count = 0;
 }
 
-static void unregister_all_hooks(void)
-{
-	if (perm_registered) {
-		unregister_kretprobe(&kp_inode_perm);
-		perm_registered = false;
-	}
-	if (getattr_registered) {
-		unregister_kretprobe(&kp_inode_getattr);
-		getattr_registered = false;
-	}
-	unregister_syscall_hooks();
-	unregister_getdents();
-}
-
 static int apply_config(void)
 {
 	int ret;
 	const char *paths = target_paths[0] ? target_paths : NULL;
 
-	/* Run in process context (sysfs write). Rebuild state from scratch. */
-	unregister_all_hooks();
+	/*
+	 * kretprobe hooks (getdents64 / syscall fallback) are registered at
+	 * most once and never unregistered.  Reload only refreshes the match
+	 * data; handlers consult the live config on every call.
+	 */
 	reset_state();
 
 	ret = parse_scope_mode();
@@ -955,21 +880,11 @@ static int apply_config(void)
 				ret, target_count);
 	}
 
-	if (hook_perm || hook_getattr)
-		register_perm_getattr();
-
-	if (hide_dirents && hook_getdents)
-		register_getdents();
+	register_getdents();
 
 	if (parse_syscall_hooks())
 		register_syscall_hooks();
 
-	pr_info(PM_LOG_PREFIX
-		"applied -- targets=%u scope=%s deny_uids=%u allow_uids=%u "
-		"hide_dirents=%d hooks=[perm=%d getattr=%d getdents=%d]\n",
-		target_count, scope_mode, deny_uid_count, allow_uid_count,
-		hide_dirents, hook_perm, hook_getattr,
-		hook_getdents && hide_dirents);
 	return 0;
 }
 
@@ -1003,8 +918,8 @@ static int pkgmask_status_get(char *buffer, const struct kernel_param *kp)
 		"targets=%u scope=%s deny_uids=%u allow_uids=%u "
 		"hooks=[perm=%d getattr=%d getdents=%d syscall=%d]\n",
 		target_count, scope_mode, deny_uid_count, allow_uid_count,
-		perm_registered, getattr_registered, getdents_registered,
-		pm_syscall_probes[0].registered);
+		lsm_registered ? 1 : 0, lsm_registered ? 1 : 0,
+		getdents_registered, pm_syscall_probes[0].registered);
 }
 
 static const struct kernel_param_ops status_ops = {
@@ -1018,22 +933,18 @@ MODULE_PARM_DESC(status, "Read-only state dump");
 
 static int __init pkgmask_init(void)
 {
-	/*
-	 * Boot-time registration is deliberately minimal: the two
-	 * pure-memory-read hooks with an empty target list are a no-op
-	 * for every process. Real configuration arrives later through
-	 * sysfs + reload, once /data is mounted.
-	 */
-	register_perm_getattr();
+	register_lsm_hooks();
 
-	pr_info(PM_LOG_PREFIX
-		"built-in ready; configure via "
-		"/sys/module/pkgmask/parameters/* then write 1 to reload\n");
+	/*
+	 * Register getdents64 hook early if requested (idempotent; later
+	 * reloads keep it).  SUSFS/KPM may occupy some ftrace slots, but
+	 * __arm64_sys_getdents64 is usually still available.
+	 */
+	register_getdents();
+
 	return 0;
 }
 
 module_init(pkgmask_init);
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("a41929566");
-MODULE_DESCRIPTION("Built-in kernel package hiding (zero-width safe)");
