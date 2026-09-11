@@ -4,25 +4,19 @@
  *
  * Built into the kernel image (obj-y), NOT a loadable module.
  *
- * Mechanism (v3):
- *   1. getdents64 kretprobe   - directory entry filtering (scan-proof listing)
+ * Mechanism (v3.2):
+ *   1. filldir64 / filldir filtering (fs/readdir.c)
+ *        - The core kernel calls pkgmask_filter_dirent(name, dir) for every
+ *          directory entry; pkgmask returns true for hidden entries and the
+ *          entry is dropped.  This replaces the v3.0/3.1 kretprobe on
+ *          __arm64_sys_getdents64, which failed (-EINVAL/-EEXIST) on kernels
+ *          where SUSFS/KPM already occupies that ftrace slot.
+ *        - fs/readdir.c defines a __weak default returning false; this
+ *          built-in module provides the strong definition, so the kernel
+ *          links whether or not pkgmask is enabled.
  *   2. LSM hooks              - inode_permission / inode_getattr deny
  *                               (stat / open / access -> ENOENT)
  *   3. __arm64_sys_* path kretprobes as fallback (optional, off by default)
- *
- * v3 change: kretprobes on inode_permission / vfs_getattr are removed.
- * On kernels where SUSFS (or similar) permanently ftrace-hooks those VFS
- * functions, register_kretprobe returns -EINVAL and the hide never engages.
- * LSM hooks use an independent hook chain and keep working in that setup.
- *
- * v3.1: adapt to the vendor (OnePlus SM8750) LSM API:
- *   - inode_getattr hook takes a single `const struct path *` (no idmap)
- *   - security_add_hooks(hooks, count, "name") legacy signature (no lsm_id)
- *
- * getdents64 / syscall kretprobes are registered at most once and never
- * unregistered: reload only refreshes the match data.  Handlers consult the
- * live config on every call, so re-applying config never touches kprobe
- * registration (avoids -EINVAL/-EEXIST on re-registration).
  *
  * Zero-width character variants of a hidden path resolve to the same inode,
  * so matching on (dev, ino) hides every spelling identically.
@@ -35,7 +29,7 @@
  *   /sys/module/pkgmask/parameters/hide_dirents   0/1
  *   /sys/module/pkgmask/parameters/hook_perm      0/1
  *   /sys/module/pkgmask/parameters/hook_getattr   0/1
- *   /sys/module/pkgmask/parameters/hook_getdents  0/1
+ *   /sys/module/pkgmask/parameters/hook_getdents  0/1  (drives filldir64)
  *   /sys/module/pkgmask/parameters/syscall_hooks  comma list or empty
  *   /sys/module/pkgmask/parameters/reload         write "1" to (re)apply
  *   /sys/module/pkgmask/parameters/status         read-only state dump
@@ -78,14 +72,13 @@ extern int close_fd(unsigned int fd);
 #define TARGET_TEXT_LEN 256
 #define UID_LIST_LEN 8192
 #define PM_SYSCALL_HOOKS_LEN 256
-#define GETDENTS_BUF_LIMIT 65536u
 #define ANDROID_USER_OFFSET 100000u
 
 /* ------------------------- tunables (sysfs) ------------------------- */
 
 static bool hide_dirents = true;
 module_param(hide_dirents, bool, 0644);
-MODULE_PARM_DESC(hide_dirents, "Hide target from getdents64 listings");
+MODULE_PARM_DESC(hide_dirents, "Hide target from directory listings");
 
 static bool hook_perm = true;
 module_param(hook_perm, bool, 0644);
@@ -97,7 +90,7 @@ MODULE_PARM_DESC(hook_getattr, "Enable inode_getattr LSM hook");
 
 static bool hook_getdents;
 module_param(hook_getdents, bool, 0644);
-MODULE_PARM_DESC(hook_getdents, "Enable __arm64_sys_getdents64 kretprobe");
+MODULE_PARM_DESC(hook_getdents, "Enable filldir64/filldir listing filter");
 
 static bool enable_syscall_hooks;
 module_param(enable_syscall_hooks, bool, 0644);
@@ -136,6 +129,11 @@ struct hidden_target {
 	unsigned long long ino;
 	char path[TARGET_TEXT_LEN];
 	bool inode_ok;
+	/* v3.2: parent directory (dev, ino) + dirent name for readdir filter */
+	dev_t parent_dev;
+	unsigned long long parent_ino;
+	char name[TARGET_TEXT_LEN];
+	bool parent_ok;
 };
 
 static struct hidden_target targets[MAX_HIDE_TARGETS];
@@ -168,20 +166,6 @@ static inline bool is_target_inode(const struct inode *inode)
 			continue;
 		if (inode->i_ino == targets[i].ino &&
 		    inode->i_sb->s_dev == targets[i].dev)
-			return true;
-	}
-
-	return false;
-}
-
-static inline bool is_target_ino(__u64 ino)
-{
-	unsigned int i;
-
-	for (i = 0; i < target_count; i++) {
-		if (!targets[i].inode_ok)
-			continue;
-		if (ino == (__u64)targets[i].ino)
 			return true;
 	}
 
@@ -276,140 +260,38 @@ static int __init register_lsm_hooks(void)
 	return 0;
 }
 
-/* --------------------------- getdents64 --------------------------- */
+/* --------------------------- readdir filter (v3.2) --------------------------- */
 
-static struct kretprobe kp_getdents;
-static bool getdents_registered;
-
-struct getdents_cb_data {
-	struct linux_dirent64 __user *dirent;
-	void *kbuf;
-	size_t kbuf_len;
-	bool scoped;
-};
-
-static int getdents_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
+/*
+ * Called from fs/readdir.c filldir64()/filldir() for every directory entry.
+ * The core kernel provides a __weak default (returns false); this built-in
+ * module provides the strong definition, replacing the old kretprobe on
+ * __arm64_sys_getdents64 (which collides with SUSFS/KPM ftrace slots).
+ *
+ * Returns true when the entry must be hidden from the current caller.
+ */
+bool pkgmask_filter_dirent(const char *name, const struct inode *dir)
 {
-	struct getdents_cb_data *d = (struct getdents_cb_data *)ri->data;
-	struct pt_regs *user_regs = (struct pt_regs *)regs->regs[0];
-	unsigned int count;
+	unsigned int i;
 
-	d->dirent = NULL;
-	d->kbuf = NULL;
-	d->kbuf_len = 0;
-	d->scoped = (hide_dirents && hook_getdents) &&
-		    should_hide_for_current();
+	if (!hide_dirents || !hook_getdents || !target_count || !dir || !name)
+		return false;
 
-	if (!d->scoped || !user_regs)
-		return 0;
+	if (!should_hide_for_current())
+		return false;
 
-	count = (unsigned int)user_regs->regs[2];
-	d->dirent = (struct linux_dirent64 __user *)user_regs->regs[1];
-
-	count = min(count, GETDENTS_BUF_LIMIT);
-	if (!count)
-		return 0;
-
-	d->kbuf = kmalloc(count, GFP_ATOMIC);
-	if (d->kbuf)
-		d->kbuf_len = count;
-	return 0;
-}
-
-static int getdents_exit(struct kretprobe_instance *ri, struct pt_regs *regs)
-{
-	struct getdents_cb_data *d = (struct getdents_cb_data *)ri->data;
-	long ret = regs->regs[0];
-	struct linux_dirent64 *kbuf, *prev, *cur;
-	long bpos, new_len;
-	const size_t hdr_off = offsetof(struct linux_dirent64, d_name);
-	const size_t min_reclen = offsetof(struct linux_dirent64, d_name) + 1;
-	bool modified = false;
-
-	if (ret <= 0 || !d->scoped || !d->dirent || !d->kbuf)
-		goto out;
-
-	if ((size_t)ret > d->kbuf_len)
-		goto out;
-
-	if (copy_from_user(d->kbuf, d->dirent, ret))
-		goto out;
-
-	kbuf = d->kbuf;
-	prev = NULL;
-	bpos = 0;
-	new_len = ret;
-
-	while (bpos + (long)hdr_off < new_len) {
-		unsigned short reclen;
-
-		cur = (struct linux_dirent64 *)((char *)kbuf + bpos);
-		reclen = cur->d_reclen;
-
-		if (reclen < min_reclen || reclen > new_len - bpos)
-			break;
-
-		if (is_target_ino(cur->d_ino)) {
-			modified = true;
-			if (prev) {
-				if ((unsigned int)prev->d_reclen + reclen <=
-				    65535u) {
-					prev->d_reclen += reclen;
-					bpos += reclen;
-					continue;
-				}
-			}
-
-			new_len -= reclen;
-			if (new_len > bpos)
-				memmove(cur, (char *)cur + reclen,
-					new_len - bpos);
+	for (i = 0; i < target_count; i++) {
+		if (!targets[i].parent_ok)
 			continue;
-		}
-
-		prev = cur;
-		bpos += reclen;
+		if (dir->i_ino == targets[i].parent_ino &&
+		    dir->i_sb->s_dev == targets[i].parent_dev &&
+		    strcmp(name, targets[i].name) == 0)
+			return true;
 	}
 
-	if (modified) {
-		if (copy_to_user(d->dirent, kbuf, new_len))
-			pr_warn_ratelimited(PM_LOG_PREFIX
-					    "copy_to_user failed, directory may leak\n");
-		else
-			regs->regs[0] = new_len;
-	}
-
-out:
-	kfree(d->kbuf);
-	d->kbuf = NULL;
-	d->kbuf_len = 0;
-	return 0;
+	return false;
 }
-
-static int register_getdents(void)
-{
-	int ret;
-
-	if (!hook_getdents)
-		return 0;
-	if (getdents_registered)
-		return 0;
-
-	kp_getdents.kp.symbol_name = "__arm64_sys_getdents64";
-	kp_getdents.entry_handler = getdents_entry;
-	kp_getdents.handler = getdents_exit;
-	kp_getdents.data_size = sizeof(struct getdents_cb_data);
-	kp_getdents.maxactive = 20;
-	ret = register_kretprobe(&kp_getdents);
-	if (ret) {
-		pr_warn(PM_LOG_PREFIX
-			"register_kretprobe(__arm64_sys_getdents64) failed: %d\n",
-			ret);
-		return ret;
-	}
-	getdents_registered = true;
-	return 0;
-}
+EXPORT_SYMBOL_GPL(pkgmask_filter_dirent);
 
 /* --------------------------- syscall fallback --------------------------- */
 
@@ -636,6 +518,26 @@ static void register_syscall_hooks(void)
 
 /* --------------------------- target resolution --------------------------- */
 
+static void record_parent_info(struct hidden_target *t, struct dentry *dentry)
+{
+	struct inode *pinode;
+	const unsigned char *dname;
+
+	if (!t || !dentry)
+		return;
+
+	pinode = d_inode(dentry->d_parent);
+	if (pinode && pinode->i_sb) {
+		t->parent_ino = pinode->i_ino;
+		t->parent_dev = pinode->i_sb->s_dev;
+		t->parent_ok = pinode->i_ino != 0;
+	}
+
+	dname = dentry->d_name.name;
+	if (dname && dname[0])
+		strscpy(t->name, dname, sizeof(t->name));
+}
+
 static int add_target_path(const char *path_name)
 {
 	struct path path;
@@ -675,6 +577,7 @@ static int add_target_path(const char *path_name)
 	targets[target_count].inode_ok = inode->i_ino != 0;
 	strscpy(targets[target_count].path, path_name,
 		sizeof(targets[target_count].path));
+	record_parent_info(&targets[target_count], path.dentry);
 	target_count++;
 	path_put(&path);
 
@@ -727,6 +630,8 @@ static int add_target_path(const char *path_name)
 					ainode->i_ino != 0;
 				strscpy(targets[target_count].path, alias,
 					sizeof(targets[target_count].path));
+				record_parent_info(&targets[target_count],
+						   apath.dentry);
 				target_count++;
 			}
 			path_put(&apath);
@@ -851,9 +756,9 @@ static int apply_config(void)
 	const char *paths = target_paths[0] ? target_paths : NULL;
 
 	/*
-	 * kretprobe hooks (getdents64 / syscall fallback) are registered at
-	 * most once and never unregistered.  Reload only refreshes the match
-	 * data; handlers consult the live config on every call.
+	 * readdir filtering and LSM hooks consult the live config on every
+	 * call; the optional syscall kretprobes are registered at most once
+	 * and never unregistered.  Reload only refreshes the match data.
 	 */
 	reset_state();
 
@@ -876,8 +781,6 @@ static int apply_config(void)
 				"resolve_target_paths: %d (targets=%u)\n",
 				ret, target_count);
 	}
-
-	register_getdents();
 
 	if (parse_syscall_hooks())
 		register_syscall_hooks();
@@ -916,7 +819,7 @@ static int pkgmask_status_get(char *buffer, const struct kernel_param *kp)
 		"hooks=[perm=%d getattr=%d getdents=%d syscall=%d]\n",
 		target_count, scope_mode, deny_uid_count, allow_uid_count,
 		lsm_registered ? 1 : 0, lsm_registered ? 1 : 0,
-		getdents_registered, pm_syscall_probes[0].registered);
+		hook_getdents ? 1 : 0, pm_syscall_probes[0].registered);
 }
 
 static const struct kernel_param_ops status_ops = {
@@ -933,12 +836,11 @@ static int __init pkgmask_init(void)
 	register_lsm_hooks();
 
 	/*
-	 * Register getdents64 hook early if requested (idempotent; later
-	 * reloads keep it).  SUSFS/KPM may occupy some ftrace slots, but
-	 * __arm64_sys_getdents64 is usually still available.
+	 * readdir filtering (filldir64/filldir) is compiled into fs/readdir.c
+	 * and drives off hook_getdents, so no runtime registration is needed.
+	 * Only the optional syscall fallback uses kretprobes, and only when
+	 * the user configures syscall_hooks.
 	 */
-	register_getdents();
-
 	return 0;
 }
 
