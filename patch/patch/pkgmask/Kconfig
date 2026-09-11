@@ -1,0 +1,17 @@
+config PKGMASK
+	bool "PkgMask: kernel-level app package hiding (zero-width safe)"
+	default y
+	help
+	  Hides configured app data directories at the VFS layer by
+	  (dev, inode) matching, defeating zero-width-character path
+	  variants. Scope is per-UID (deny / allow) or global.
+
+	  Runtime configuration (live, no reboot):
+	    /sys/module/pkgmask/parameters/target_paths
+	    /sys/module/pkgmask/parameters/deny_uids
+	    /sys/module/pkgmask/parameters/scope_mode
+	    /sys/module/pkgmask/parameters/reload   (write "1" to apply)
+	    /sys/module/pkgmask/parameters/status   (read-only)
+
+	  At boot only two no-op hooks are registered (empty target list);
+	  nothing is hidden until configuration is applied via sysfs.
