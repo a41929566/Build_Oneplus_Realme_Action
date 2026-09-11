@@ -269,7 +269,7 @@ jobs:
             const repoName = process.env.PUBLIC_CACHE_REPO || 'showdo/Public_Ccache';
             const releaseTag = process.env.PUBLIC_CACHE_TAG || 'exported-ccaches';
             const [owner, repo] = repoName.split('/');
-            const deviceName = process.env.DEVICES_NAME;
+            const deviceName = process.env.DEVICE_NAME;
             const cacheVariant = process.env.CACHE_VARIANT || '';
             let selected = null;
             const escape_regex = (value) => value.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&');
@@ -581,9 +581,9 @@ jobs:
         run: |
           cd kernel_workspace/common
           mkdir -p drivers/misc/pkgmask
-          cp "${GITHUB_WORKSPACE}/patch/pkgmask/pkgmask.c" drivers/misc/pkgmask/
-          cp "${GITHUB_WORKSPACE}/patch/pkgmask/Kconfig"    drivers/misc/pkgmask/
-          cp "${GITHUB_WORKSPACE}/patch/pkgmask/Makefile"   drivers/misc/pkgmask/
+          cp "${GITHUB_WORKSPACE}/patch/patch/pkgmask/pkgmask.c" drivers/misc/pkgmask/
+          cp "${GITHUB_WORKSPACE}/patch/patch/pkgmask/Kconfig"    drivers/misc/pkgmask/
+          cp "${GITHUB_WORKSPACE}/patch/patch/pkgmask/Makefile"   drivers/misc/pkgmask/
           grep -q 'source "drivers/misc/pkgmask/Kconfig"' drivers/misc/Kconfig || \
             sed -i '/endmenu/i source "drivers/misc/pkgmask/Kconfig"' drivers/misc/Kconfig
           grep -q 'obj-$(CONFIG_PKGMASK) += pkgmask/' drivers/misc/Makefile || \
