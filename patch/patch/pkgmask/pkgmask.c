@@ -1,39 +1,39 @@
-// SPDX-License-Identifier: GPL-2.0
+// 许可证：GPL-2.0
 /*
- * pkgmask - built-in kernel package hiding for Android arm64 / GKI 6.6
+ * pkgmask - 用于 Android arm64 / GKI 6.6 的内建内核软件包隐藏功能
  *
- * Built into the kernel image (obj-y), NOT a loadable module.  This avoids
- * every insmod-side failure mode seen with the LKM build on self-compiled
- * kernels: no version magic / CRC checks, no undefined-export problems, no
- * CFI-on-indirect-call issues, no boot-time load ordering.
+ * 内置于内核镜像中（obj-y），而非可加载模块。这可以避免
+ * 在自编译内核上构建LKM时遇到的每一种insmod侧失败模式
+ * 内核：无版本魔法/CRC校验，无未定义导出问题，无
+ * 间接调用上的CFI问题，无启动时的加载顺序问题。
  *
- * What it does (same proven design as the PathMask project):
- *   1. getdents64 directory entry filtering  (scan-proof listings)
- *   2. inode_permission / vfs_getattr hooks   (stat / open / access deny)
- *   3. __arm64_sys_* path hooks as fallback   (ThinLTO-inlined paths)
+ * 它的作用（与PathMask项目采用相同且经过验证的设计）：
+ *   1. getdents64 目录项过滤（防扫描的目录列表）
+ *   2. inode_permission / vfs_getattr 钩子（阻止 stat / open / access 操作）
+ *   3. 以 __arm64_sys_* 路径钩子作为后备方案（ThinLTO内联路径）
  *
- * Zero-width character variants of a hidden path resolve to the same inode,
- * so matching on (dev, ino) hides every spelling identically.
+ * 隐式路径的零宽度字符变体解析后会指向同一个 inode，
+ * 因此基于 (dev, ino) 的匹配会将所有拼写形式一视同仁地隐藏。
  *
- * Configuration interface (live, no reboot):
- *   /sys/module/pkgmask/parameters/target_paths   comma-separated abs paths
- *   /sys/module/pkgmask/parameters/deny_uids      comma-separated UIDs
- *   /sys/module/pkgmask/parameters/allow_uids     comma-separated UIDs
+ * 配置接口（实时生效，无需重启）：
+ *   /sys/module/pkgmask/parameters/target_paths   以逗号分隔的绝对路径
+ *   /sys/module/pkgmask/parameters/deny_uids      以逗号分隔的UID列表
+ *   /sys/module/pkgmask/parameters/allow_uids     以逗号分隔的UID列表
  *   /sys/module/pkgmask/parameters/scope_mode     global | deny | allow
  *   /sys/module/pkgmask/parameters/hide_dirents   0/1
  *   /sys/module/pkgmask/parameters/hook_perm      0/1
  *   /sys/module/pkgmask/parameters/hook_getattr   0/1
  *   /sys/module/pkgmask/parameters/hook_getdents  0/1
- *   /sys/module/pkgmask/parameters/syscall_hooks  comma list or empty
- *   /sys/module/pkgmask/parameters/reload         write "1" to (re)apply
- *   /sys/module/pkgmask/parameters/status         read-only state dump
+ *   /sys/module/pkgmask/parameters/syscall_hooks  逗号分隔列表或为空
+ *   /sys/module/pkgmask/parameters/reload         写入“1”以（重新）应用
+ *   /sys/module/pkgmask/parameters/status         只读状态转储
  *
- * At boot the module registers only the two pure-memory-read hooks
- * (inode_permission + vfs_getattr) with an empty target list, which is a
- * no-op for every process.  Configuration is applied later via sysfs
- * (typically by the paired KernelSU config-module's service.sh) which
- * triggers `reload` and resolves the target paths in normal process
- * context once /data is mounted.
+ * 在启动时，该模块仅注册了两个纯内存读取挂钩
+ * （inode_permission + vfs_getattr），且目标列表为空，这是一
+ * 对每个进程均无操作。配置将在稍后通过 sysfs 应用
+ * （通常由配对的 KernelSU 配置模块的 service.sh 脚本）执行
+ * 触发 `reload` 并在普通进程中解析目标路径
+ * 上下文仅在 /data 挂载时执行一次。
  */
 
 #include <linux/module.h>
@@ -57,6 +57,13 @@
 #include <asm/syscall.h>
 #include <asm/unistd.h>
 
+/*
+ * close_fd() is defined in fs/file.c (EXPORT_SYMBOL) but its declaration
+ * lives in fs/file.h, an internal header drivers cannot include.
+ * 在此处显式声明。
+ */
+extern int close_fd(unsigned int fd);
+
 #define PM_LOG_PREFIX "pkgmask: "
 #define MAX_HIDE_TARGETS 64
 #define MAX_DENY_UIDS 1024
@@ -67,11 +74,11 @@
 #define GETDENTS_BUF_LIMIT 65536u
 #define ANDROID_USER_OFFSET 100000u
 
-/* ------------------------- tunables (sysfs) ------------------------- */
+/* ------------------------- 可调参数（sysfs） ------------------------- */
 
 static bool hide_dirents = true;
 module_param(hide_dirents, bool, 0644);
-MODULE_PARM_DESC(hide_dirents, "Hide target from getdents64 listings");
+MODULE_PARM_DESC(hide_dirents, "从getdents64的目录列表中隐藏目标");
 
 static bool hook_perm = true;
 module_param(hook_perm, bool, 0644);
