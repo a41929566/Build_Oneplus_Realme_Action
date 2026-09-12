@@ -602,17 +602,16 @@ jobs:
           import sys
           p = 'drivers/android/binder.c'
           c = open(p, encoding='utf-8', errors='ignore').read()
-          anchor = '''\tret = binder_do_deferred_txn_copies(&target_proc->alloc, t->buffer,
-\t\t\t\t\t    &sgc_head, &pf_head);
-\tif (ret) {
-\t\tbinder_user_error("%d:%d got transaction with invalid offsets ptr\\n",
-\t\t\t\t  proc->pid, thread->pid);
-\t\treturn_error = BR_FAILED_REPLY;
-\t\treturn_error_param = ret;
-\t\treturn_error_line = __LINE__;
-\t\tgoto err_copy_data_failed;
-\t}
-'''
+          anchor = ("\tret = binder_do_deferred_txn_copies(&target_proc->alloc, t->buffer,\n"
+          "\t\t\t\t\t    &sgc_head, &pf_head);\n"
+          "\tif (ret) {\n"
+          "\t\tbinder_user_error(\"%d:%d got transaction with invalid offsets ptr\\n\",\n"
+          "\t\t\t\t  proc->pid, thread->pid);\n"
+          "\t\treturn_error = BR_FAILED_REPLY;\n"
+          "\t\treturn_error_param = ret;\n"
+          "\t\treturn_error_line = __LINE__;\n"
+          "\t\tgoto err_copy_data_failed;\n"
+          "\t}\n")
           n = c.count(anchor)
           if n != 1:
               sys.stderr.write("binder anchor count=%d\n" % n)
