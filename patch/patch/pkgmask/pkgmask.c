@@ -958,11 +958,13 @@ int pmk_filter_binder_data_for(char *data, size_t size, uid_t target_uid)
 		return 0;
 	if (!is_in_uid_list(target_uid))
 		return 0;
-	pr_info(PM_LOG_PREFIX "binder filter uid=%u size=%zu pkgs=%u\n",
-		 target_uid, size, binder_hide_pkg_count);
+	pr_debug(PM_LOG_PREFIX "binder filter uid=%u size=%zu pkgs=%u\n",
+		  target_uid, size, binder_hide_pkg_count);
 
 	for (i = 0; i < binder_hide_pkg_count; i++) {
 		const char *needle = binder_hide_pkg_list[i];
+		if (!needle)
+			continue;
 		char *p = data;
 		char *end;
 
