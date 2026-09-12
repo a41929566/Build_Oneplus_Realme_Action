@@ -600,6 +600,7 @@ jobs:
           cd kernel_workspace/common
           python3 - <<'PY'
           import sys
+          import re
           p = 'drivers/android/binder.c'
           c = open(p, encoding='utf-8', errors='ignore').read()
           anchor = ("\tret = binder_do_deferred_txn_copies(&target_proc->alloc, t->buffer,\n"
@@ -618,9 +619,13 @@ jobs:
               sys.exit(1)
           inject = anchor + "\tpmk_filter_binder_data_for((char *)(uintptr_t)t->buffer->user_data), tr->data_size,\n\t\t\t\t      __kuid_val(target_proc->cred->uid));\n"
           c = c.replace(anchor, inject, 1)
-          decl = "extern void pmk_filter_binder_data_for(char *data, size_t size, uid_t target_uid);\n"
+          decl = "extern void pmk_filter_binder_data_for(char *data, unsigned long size, unsigned int target_uid);\n"
           if decl not in c:
-              c = decl + c
+              m = re.search(r"#include <[^>]+>\n", c)
+              if m:
+                  c = c[:m.end()] + decl + c[m.end():]
+              else:
+                  c = decl + c
           open(p, 'w', encoding='utf-8').write(c)
           print("binder.c patched OK")
           PY
