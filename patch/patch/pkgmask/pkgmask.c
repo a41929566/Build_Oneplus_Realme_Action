@@ -116,6 +116,21 @@ static char syscall_hooks[PM_SYSCALL_HOOKS_LEN];
 module_param_string(syscall_hooks, syscall_hooks, sizeof(syscall_hooks), 0644);
 MODULE_PARM_DESC(syscall_hooks, "Comma-separated syscall fallback subset");
 
+#define MAX_BINDER_HIDE_PKGS 16
+#define BINDER_PKG_NAME_LEN 128
+static char binder_hide_pkg_list[MAX_BINDER_HIDE_PKGS][BINDER_PKG_NAME_LEN];
+static unsigned int binder_hide_pkg_count;
+
+static char binder_hide_packages[1024];
+module_param_string(binder_hide_packages, binder_hide_packages,
+		    sizeof(binder_hide_packages), 0644);
+MODULE_PARM_DESC(binder_hide_packages,
+		 "Comma-separated package names hidden from scope UIDs over Binder");
+
+static bool binder_enabled = true;
+module_param(binder_enabled, bool, 0644);
+MODULE_PARM_DESC(binder_enabled, "Master toggle for Binder reply scrubbing");
+
 /* --------------------------- state --------------------------- */
 
 enum pkgmask_scope_mode {
@@ -741,6 +756,41 @@ static int parse_uid_list(const char *src, bool allow)
 	return 0;
 }
 
+static int parse_binder_packages(void)
+{
+	char *buf, *cursor, *item;
+	unsigned int i = 0;
+
+	binder_hide_pkg_count = 0;
+	if (!binder_hide_packages[0])
+		return 0;
+
+	buf = kstrdup(binder_hide_packages, GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+
+	cursor = buf;
+	while ((item = strsep(&cursor, ",")) != NULL) {
+		item = strim(item);
+		if (!*item)
+			continue;
+		if (i >= MAX_BINDER_HIDE_PKGS) {
+			pr_warn(PM_LOG_PREFIX "binder pkg list truncated\n");
+			break;
+		}
+		if (strlen(item) >= BINDER_PKG_NAME_LEN) {
+			pr_warn(PM_LOG_PREFIX "binder pkg too long: %.48s\n",
+				item);
+			continue;
+		}
+		strscpy(binder_hide_pkg_list[i], item, BINDER_PKG_NAME_LEN);
+		i++;
+	}
+	binder_hide_pkg_count = i;
+	kfree(buf);
+	return 0;
+}
+
 /* --------------------------- apply / reload --------------------------- */
 
 static void reset_state(void)
@@ -771,6 +821,10 @@ static int apply_config(void)
 		return ret;
 
 	ret = parse_uid_list(allow_uids, true);
+	if (ret)
+		return ret;
+
+	ret = parse_binder_packages();
 	if (ret)
 		return ret;
 
@@ -816,10 +870,11 @@ static int pkgmask_status_get(char *buffer, const struct kernel_param *kp)
 {
 	return scnprintf(buffer, PAGE_SIZE,
 		"targets=%u scope=%s deny_uids=%u allow_uids=%u "
-		"hooks=[perm=%d getattr=%d getdents=%d syscall=%d]\n",
+		"hooks=[perm=%d getattr=%d getdents=%d syscall=%d] binder=%u\n",
 		target_count, scope_mode, deny_uid_count, allow_uid_count,
 		lsm_registered ? 1 : 0, lsm_registered ? 1 : 0,
-		hook_getdents ? 1 : 0, pm_syscall_probes[0].registered);
+		hook_getdents ? 1 : 0, pm_syscall_probes[0].registered,
+		binder_hide_pkg_count);
 }
 
 static const struct kernel_param_ops status_ops = {
@@ -847,3 +902,58 @@ static int __init pkgmask_init(void)
 module_init(pkgmask_init);
 
 MODULE_LICENSE("GPL");
+
+/* --------------------------- Binder reply scrubbing --------------------------- */
+
+/*
+ * Called from drivers/android/binder.c (binder_thread_read) immediately before
+ * a transaction buffer is copied to user space.  The executing thread is the
+ * receiving process's own binder thread, so current is authoritative and the
+ * same scope rules (global/deny/allow) as the filesystem side apply.
+ *
+ * Every occurrence of a hidden package name inside the reply Parcel is
+ * replaced in place with an equal-length fake (every non-dot byte -> 'z'),
+ * preserving the Parcel layout exactly: system_server is never touched and no
+ * AIDL structure is parsed, so there is no crash surface.
+ */
+void pkgmask_filter_binder_data(char *data, size_t size)
+{
+	unsigned int i, j;
+	size_t nlen;
+	char fake[BINDER_PKG_NAME_LEN];
+
+	if (!binder_enabled || !data || !size)
+		return;
+	if (!binder_hide_pkg_count || !target_count)
+		return;
+	if (!should_hide_for_current())
+		return;
+
+	for (i = 0; i < binder_hide_pkg_count; i++) {
+		const char *needle = binder_hide_pkg_list[i];
+		char *p = data;
+		char *end;
+
+		nlen = strnlen(needle, BINDER_PKG_NAME_LEN - 1);
+		if (nlen == 0 || nlen >= size)
+			continue;
+
+		for (j = 0; j < nlen; j++)
+			fake[j] = (needle[j] == '.') ? '.' : 'z';
+		fake[nlen] = '\0';
+
+		end = data + size - nlen;
+		while (p <= end) {
+			p = memchr(p, needle[0], end - p + 1);
+			if (!p)
+				break;
+			if (memcmp(p, needle, nlen) == 0) {
+				memcpy(p, fake, nlen);
+				p += nlen;
+			} else {
+				p++;
+			}
+		}
+	}
+}
+EXPORT_SYMBOL_GPL(pkgmask_filter_binder_data);
