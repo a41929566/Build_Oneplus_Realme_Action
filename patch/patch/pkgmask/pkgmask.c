@@ -561,6 +561,15 @@ static int add_uid_to_list(uid_t *list, unsigned int *count, unsigned int max,
 	return 0;
 }
 
+static void trim_param(char *s)
+{
+	size_t l = strlen(s);
+
+	while (l > 0 && (s[l - 1] == '\n' || s[l - 1] == '\r' ||
+			  s[l - 1] == ' ' || s[l - 1] == '\t'))
+		s[--l] = '\0';
+}
+
 static int parse_uid_list(const char *buf, uid_t *list, unsigned int *count,
 			  unsigned int max)
 {
@@ -627,6 +636,13 @@ static void unregister_all_hooks(void)
 
 static int apply_config(void)
 {
+	/* echo writes '\n'; trim all string params before parsing */
+	trim_param(scope_mode);
+	trim_param(deny_uids);
+	trim_param(allow_uids);
+	trim_param(target_paths);
+	trim_param(hide_proc_names_buf);
+
 	unregister_all_hooks();
 
 	target_count = 0;
