@@ -65,7 +65,7 @@
  */
 extern int close_fd(unsigned int fd);
 
-#define PM_LOG_PREFIX "pkgmask: "
+#define PM_LOG_PREFIX "pmk: "
 #define MAX_HIDE_TARGETS 64
 #define MAX_DENY_UIDS 1024
 #define TARGET_PATHS_LEN 4096
@@ -77,43 +77,43 @@ extern int close_fd(unsigned int fd);
 /* ------------------------- tunables (sysfs) ------------------------- */
 
 static bool hide_dirents = true;
-module_param(hide_dirents, bool, 0644);
+module_param(hide_dirents, bool, 0600);
 MODULE_PARM_DESC(hide_dirents, "Hide target from directory listings");
 
 static bool hook_perm = true;
-module_param(hook_perm, bool, 0644);
+module_param(hook_perm, bool, 0600);
 MODULE_PARM_DESC(hook_perm, "Enable inode_permission LSM hook");
 
 static bool hook_getattr = true;
-module_param(hook_getattr, bool, 0644);
+module_param(hook_getattr, bool, 0600);
 MODULE_PARM_DESC(hook_getattr, "Enable inode_getattr LSM hook");
 
 static bool hook_getdents;
-module_param(hook_getdents, bool, 0644);
+module_param(hook_getdents, bool, 0600);
 MODULE_PARM_DESC(hook_getdents, "Enable filldir64/filldir listing filter");
 
 static bool enable_syscall_hooks;
-module_param(enable_syscall_hooks, bool, 0644);
+module_param(enable_syscall_hooks, bool, 0600);
 MODULE_PARM_DESC(enable_syscall_hooks, "Master toggle for syscall fallback");
 
 static char scope_mode[16] = "deny";
-module_param_string(scope_mode, scope_mode, sizeof(scope_mode), 0644);
+module_param_string(scope_mode, scope_mode, sizeof(scope_mode), 0600);
 MODULE_PARM_DESC(scope_mode, "Hide scope: global, deny, or allow");
 
 static char deny_uids[UID_LIST_LEN];
-module_param_string(deny_uids, deny_uids, sizeof(deny_uids), 0644);
+module_param_string(deny_uids, deny_uids, sizeof(deny_uids), 0600);
 MODULE_PARM_DESC(deny_uids, "Comma-separated scope UIDs");
 
 static char allow_uids[UID_LIST_LEN];
-module_param_string(allow_uids, allow_uids, sizeof(allow_uids), 0644);
+module_param_string(allow_uids, allow_uids, sizeof(allow_uids), 0600);
 MODULE_PARM_DESC(allow_uids, "Comma-separated exempt UIDs");
 
 static char target_paths[TARGET_PATHS_LEN];
-module_param_string(target_paths, target_paths, sizeof(target_paths), 0644);
+module_param_string(target_paths, target_paths, sizeof(target_paths), 0600);
 MODULE_PARM_DESC(target_paths, "Comma-separated absolute paths to hide");
 
 static char syscall_hooks[PM_SYSCALL_HOOKS_LEN];
-module_param_string(syscall_hooks, syscall_hooks, sizeof(syscall_hooks), 0644);
+module_param_string(syscall_hooks, syscall_hooks, sizeof(syscall_hooks), 0600);
 MODULE_PARM_DESC(syscall_hooks, "Comma-separated syscall fallback subset");
 
 #define MAX_BINDER_HIDE_PKGS 16
@@ -123,12 +123,12 @@ static unsigned int binder_hide_pkg_count;
 
 static char binder_hide_packages[1024];
 module_param_string(binder_hide_packages, binder_hide_packages,
-		    sizeof(binder_hide_packages), 0644);
+		    sizeof(binder_hide_packages), 0600);
 MODULE_PARM_DESC(binder_hide_packages,
 		 "Comma-separated package names hidden from scope UIDs over Binder");
 
 static bool binder_enabled = true;
-module_param(binder_enabled, bool, 0644);
+module_param(binder_enabled, bool, 0600);
 MODULE_PARM_DESC(binder_enabled, "Master toggle for Binder reply scrubbing");
 
 /* --------------------------- state --------------------------- */
@@ -270,7 +270,7 @@ static int __init register_lsm_hooks(void)
 	 * There is no struct lsm_id on this kernel.
 	 */
 	security_add_hooks(pkgmask_hooks, ARRAY_SIZE(pkgmask_hooks),
-			   "pkgmask");
+			   "pmk");
 	lsm_registered = true;
 	return 0;
 }
@@ -285,7 +285,7 @@ static int __init register_lsm_hooks(void)
  *
  * Returns true when the entry must be hidden from the current caller.
  */
-bool pkgmask_filter_dirent(const char *name, const struct inode *dir)
+bool pmk_filter_dirent(const char *name, const struct inode *dir)
 {
 	unsigned int i;
 
@@ -306,7 +306,7 @@ bool pkgmask_filter_dirent(const char *name, const struct inode *dir)
 
 	return false;
 }
-EXPORT_SYMBOL_GPL(pkgmask_filter_dirent);
+EXPORT_SYMBOL_GPL(pmk_filter_dirent);
 
 /* --------------------------- syscall fallback --------------------------- */
 
@@ -863,7 +863,7 @@ static const struct kernel_param_ops reload_ops = {
 	.get = param_get_bool,
 };
 static bool reload_trigger;
-module_param_cb(reload, &reload_ops, &reload_trigger, 0644);
+module_param_cb(reload, &reload_ops, &reload_trigger, 0600);
 MODULE_PARM_DESC(reload, "Write 1 to (re)apply configuration from sysfs");
 
 static int pkgmask_status_get(char *buffer, const struct kernel_param *kp)
@@ -881,7 +881,7 @@ static const struct kernel_param_ops status_ops = {
 	.get = pkgmask_status_get,
 };
 static int status_dummy;
-module_param_cb(status, &status_ops, &status_dummy, 0444);
+module_param_cb(status, &status_ops, &status_dummy, 0400);
 MODULE_PARM_DESC(status, "Read-only state dump");
 
 /* --------------------------- init --------------------------- */
@@ -919,7 +919,7 @@ MODULE_LICENSE("GPL");
  * Parcel layout exactly: offsets stay valid, system_server is never touched and
  * no AIDL structure is parsed, so there is no crash surface.
  */
-void pkgmask_filter_binder_data_for(char *data, size_t size, uid_t target_uid)
+void pmk_filter_binder_data_for(char *data, size_t size, uid_t target_uid)
 {
 	unsigned int i, j;
 	size_t nlen;
@@ -959,4 +959,4 @@ void pkgmask_filter_binder_data_for(char *data, size_t size, uid_t target_uid)
 		}
 	}
 }
-EXPORT_SYMBOL_GPL(pkgmask_filter_binder_data_for);
+EXPORT_SYMBOL_GPL(pmk_filter_binder_data_for);
