@@ -1,4 +1,4 @@
-name: Build_oneplus_sm8750
+name: Build_oneplus_sm8750_pkgmask
 permissions:
   contents: read
   actions: write
@@ -31,7 +31,6 @@ on:
         description: "✏️ 自定义内核名称- (-开头 留空则默认官方）"
         required: false
         default: ''
-      
       custom_kernel_time:
         description: "⏰ 自定义构建时间- (英文时间字符串格式 留空则默认官方）"
         required: false
@@ -41,13 +40,11 @@ on:
         required: true
         default: true
         type: boolean
-      
       enable_droidspaces:
         description: "添加 Droidspaces 容器支持"
         required: true
         default: false
         type: boolean
-        
       enable_ReKernel:
         description: "添加Re-Kernel支持"
         required: true
@@ -58,7 +55,6 @@ on:
         required: true
         default: true
         type: boolean
-      
       enable_scx:
         description: "添加完美风驰"
         required: true
@@ -269,10 +265,10 @@ jobs:
             const repoName = process.env.PUBLIC_CACHE_REPO || 'showdo/Public_Ccache';
             const releaseTag = process.env.PUBLIC_CACHE_TAG || 'exported-ccaches';
             const [owner, repo] = repoName.split('/');
-            const deviceName = process.env.DEVICES_NAME;
+            const deviceName = process.env.DEVICE_NAME;
             const cacheVariant = process.env.CACHE_VARIANT || '';
             let selected = null;
-            const escape_regex = (value) => value.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&');
+            const escape_regex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
             // 优先精确匹配带变体的资产，其次匹配不带变体的
             const variantExactName = `ccache-${deviceName}${cacheVariant}.tar.zst`;
             const plainExactName = `ccache-${deviceName}.tar.zst`;
@@ -577,65 +573,6 @@ jobs:
           patch -p1 < 50_add_susfs_in_gki-android15-6.6.patch || true
           patch -p1 -N -F 3 < 69_hide_stuff.patch || true
           echo "[OK] SUSFS 补丁处理流程全部完成"
-      - name: 🔧 Add PkgMask (添加 PkgMask 包名遮罩)
-        run: |
-          cd kernel_workspace/common
-          mkdir -p drivers/misc/pkgmask
-          cp "${GITHUB_WORKSPACE}/patch/patch/pkgmask/pkgmask.c" drivers/misc/pkgmask/
-          cp "${GITHUB_WORKSPACE}/patch/patch/pkgmask/Kconfig"    drivers/misc/pkgmask/
-          cp "${GITHUB_WORKSPACE}/patch/patch/pkgmask/Makefile"   drivers/misc/pkgmask/
-          grep -q 'source "drivers/misc/pkgmask/Kconfig"' drivers/misc/Kconfig || \
-            sed -i '/endmenu/i source "drivers/misc/pkgmask/Kconfig"' drivers/misc/Kconfig
-          grep -q 'obj-$(CONFIG_PKGMASK) += pkgmask/' drivers/misc/Makefile || \
-            printf '\nobj-$(CONFIG_PKGMASK) += pkgmask/\n' >> drivers/misc/Makefile
-          echo "CONFIG_PKGMASK=y" >> arch/arm64/configs/gki_defconfig
-          echo "✅ PkgMask 集成完成"
-      - name: 🔧 Apply PkgMask readdir filter (应用 readdir 目录过滤)
-        run: |
-          cd kernel_workspace/common
-          cp "${GITHUB_WORKSPACE}/patch/patch/readdir.c" fs/readdir.c
-          echo "✅ PkgMask readdir 过滤已应用 (filldir64/filldir weak hook)"
-      - name: 🔧 Apply PkgMask binder filter (应用 Binder 包名过滤)
-        run: |
-          cd kernel_workspace/common
-          python3 - <<'PY'
-          import sys
-          import re
-          # v4.6 稳定模式：BINDER_INJECT=False → binder.c 零改动，绝不死机。
-          # 需要启用 PM API 包名过滤时，把下面改为 True 再编译。
-          BINDER_INJECT = False
-          if BINDER_INJECT:
-              p = 'drivers/android/binder.c'
-              c = open(p, encoding='utf-8', errors='ignore').read()
-              anchor = ("\tret = binder_do_deferred_txn_copies(&target_proc->alloc, t->buffer,\n"
-              "\t\t\t\t\t    &sgc_head, &pf_head);\n"
-              "\tif (ret) {\n"
-              "\t\tbinder_user_error(\"%d:%d got transaction with invalid offsets ptr\\n\",\n"
-              "\t\t\t\t  proc->pid, thread->pid);\n"
-              "\t\treturn_error = BR_FAILED_REPLY;\n"
-              "\t\treturn_error_param = ret;\n"
-              "\t\treturn_error_line = __LINE__;\n"
-              "\t\tgoto err_copy_data_failed;\n"
-              "\t}\n")
-              n = c.count(anchor)
-              if n != 1:
-                  sys.stderr.write("binder anchor count=%d\n" % n)
-                  sys.exit(1)
-              inject = anchor + """\t{\n\t\tunsigned int _pmk_uid = __kuid_val(target_proc->cred->uid);\n\t\tif (_pmk_uid >= 10000) {\n\t\t\tsize_t _pmk_sz = tr->data_size;\n\t\t\tif (_pmk_sz > 0 && _pmk_sz <= 1048576 &&\n\t\t\t    t->buffer && t->buffer->data_size == _pmk_sz) {\n\t\t\t\tvoid *_pmk_buf = kmalloc(_pmk_sz, GFP_ATOMIC);\n\t\t\t\tif (_pmk_buf) {\n\t\t\t\t\tint _pmk_cr = binder_alloc_copy_from_buffer(&target_proc->alloc, _pmk_buf, t->buffer, 0, _pmk_sz);\n\t\t\t\t\tif (!_pmk_cr) {\n\t\t\t\t\t\tif (pmk_filter_binder(_pmk_buf, _pmk_sz, _pmk_uid))\n\t\t\t\t\t\t\tbinder_alloc_copy_to_buffer(&target_proc->alloc, t->buffer, 0, _pmk_buf, _pmk_sz);\n\t\t\t\t\t}\n\t\t\t\t\tkfree(_pmk_buf);\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n"""
-              c = c.replace(anchor, inject, 1)
-              decl = "extern int pmk_filter_binder(char *data, size_t size, uid_t target_uid);\n"
-              if decl not in c:
-                  m = re.search(r"#include <[^>]+>\n", c)
-                  if m:
-                      c = c[:m.end()] + decl + c[m.end():]
-                  else:
-                      c = decl + c
-              open(p, 'w', encoding='utf-8').write(c)
-              print("binder.c patched OK")
-          else:
-              print("BINDER_INJECT=False: binder.c 未修改（v4.6 稳定模式）")
-          PY
-          echo "✅ PkgMask binder 过滤：默认关闭（v4.6 稳定模式）"
       - name: 🔧 Set gki_defconfig (设置编译配置) 
         run: |
           cd kernel_workspace
@@ -668,6 +605,24 @@ jobs:
           
           #Remove check_defconfig
           sudo sed -i 's/check_defconfig//' ./common/build.config.gki
+      - name: 🔧 Apply PkgMask (应用 pkgmask 内核隐藏补丁 v4.6)
+        run: |
+          cd kernel_workspace/common
+          echo "应用 pkgmask readdir 过滤弱钩子 (fs/readdir.c)..."
+          cp "${GITHUB_WORKSPACE}/patch/patch/readdir.c" fs/readdir.c
+          echo "安装 pkgmask 驱动源码 (drivers/misc/pkgmask/ 含 Kconfig+Makefile+pkgmask.c)..."
+          mkdir -p drivers/misc/pkgmask
+          cp "${GITHUB_WORKSPACE}"/patch/patch/pkgmask/* drivers/misc/pkgmask/
+          # 挂载 Kconfig / Makefile 到 drivers/misc
+          grep -q 'source "drivers/misc/pkgmask/Kconfig"' drivers/misc/Kconfig || \
+            printf '\nsource "drivers/misc/pkgmask/Kconfig"\n' >> drivers/misc/Kconfig
+          grep -q 'obj-$(CONFIG_PKGMASK) += pkgmask/' drivers/misc/Makefile || \
+            printf '\nobj-$(CONFIG_PKGMASK) += pkgmask/\n' >> drivers/misc/Makefile
+          grep -q 'CONFIG_PKGMASK=y' arch/arm64/configs/gki_defconfig || \
+            echo 'CONFIG_PKGMASK=y' >> arch/arm64/configs/gki_defconfig
+          # v4.6 关键: binder.c 零改动 (BINDER_INJECT=False) - 不注入任何 binder 代码
+          echo "v4.6: binder.c 未修改 (BINDER_INJECT=False)，无 binder 崩溃面"
+          echo "pkgmask 补丁应用完成"
       - name: 🔧 Set Kernel name (设置内核名称)
         run: |
           cd kernel_workspace
@@ -913,20 +868,14 @@ jobs:
           echo "=== 下载的产物列表 ==="
           ls -la ./release_assets/
           echo ""
-          # 为每个 AK3 目录创建 zip 包（兼容 AK3_*/ 子目录与平铺两种结构）
-          AK3_FOUND=0
+          # 为每个 AK3 目录创建 zip 包
           for ak3_dir in ./release_assets/AK3_*/; do
             if [ -d "$ak3_dir" ]; then
               name=$(basename "$ak3_dir")
               echo "打包 AK3: $name"
               (cd "$ak3_dir" && zip -qr "../${name}.zip" .)
-              AK3_FOUND=1
             fi
           done
-          if [ "$AK3_FOUND" = "0" ]; then
-            echo "未找到 AK3_* 子目录，将 release_assets 平铺内容打包为 AK3 zip"
-            (cd ./release_assets && zip -qr "../AK3_ReSukiSU.zip" .)
-          fi
           # 如果 Re-Kernel 模块存在，打包为 zip
           for rk_dir in ./release_assets/Re-Kernel-v*/; do
             if [ -d "$rk_dir" ]; then
@@ -972,6 +921,7 @@ jobs:
           if [ "${{ github.event.inputs.enable_susfs }}" = "true" ]; then
             FEATURES="${FEATURES}- ✅ SUSFS 挂载支持"$'\n'
           fi
+          FEATURES="${FEATURES}- ✅ pkgmask v4.6 内核隐藏"$'\n'
           # 自定义内核后缀
           KERNEL_SUFFIX="${{ github.event.inputs.custom_kernel_suffix }}"
           if [ -z "$KERNEL_SUFFIX" ]; then
@@ -1009,7 +959,7 @@ jobs:
           - KernelSU Next 管理器: [KernelSU-Next](https://github.com/KernelSU-Next/KernelSU-Next/releases)
           - KernelSU 原版管理器: [KernelSU](https://github.com/tiann/KernelSU/releases)
           - TG频道@qdykernel: [TG频道@qdykernel](https://t.me/qdykernel)
-          #### ※※※ 刷写内核有风险，为防止意外导致手机变砖，在刷入内核前请务必用 [KernelFlasher](https://github.com/capntrips/KernelFlasher) 等软件备份 boot 等关键启动分区! ※※※
+          #### ※※※ 刷写内核有风险，为防止出现意外导致手机变砖，在刷入内核前请务必用 [KernelFlasher](https://github.com/capntrips/KernelFlasher) 等软件备份 boot 等关键启动分区! ※※※
           ENDOFF
           echo "=== Release 说明 ==="
           cat release_notes.md
@@ -1029,4 +979,3 @@ jobs:
             ${RELEASE_FILES}
           echo ""
           echo "✅ Release 创建完成: ${TAG_NAME}"
-#（注：内容由AI生成）
