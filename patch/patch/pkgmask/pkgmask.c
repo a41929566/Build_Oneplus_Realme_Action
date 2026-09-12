@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * pkgmask v4.6 -- kernel-level app package / directory hiding
+ * pkgmask v4.7 -- kernel-level app package / directory hiding
  *
  * Why built-in: the hiding entry point for readdir is a strong
  * definition of pmk_filter_dirent() that overrides the __weak default
@@ -135,6 +135,11 @@ struct hidden_target {
 	unsigned long long parent_ino;
 	char name[TARGET_TEXT_LEN];
 	bool parent_ok;
+	/* v4.7: last path component as package-name prefix — hides
+	 * /data/app/<rand>/<pkg>-<suffix> style entries whose random
+	 * directory name cannot be pre-resolved. */
+	char pkg[TARGET_TEXT_LEN];
+	bool have_pkg;
 };
 
 static struct hidden_target targets[MAX_HIDE_TARGETS];
@@ -196,10 +201,17 @@ static bool is_target_inode(const struct inode *inode)
  * true skips the entry without writing it, so the listing stays
  * compact and offsets stay valid.  Zero-width immune: the check is by
  * parent (dev, ino) + exact entry name, never by string walking.
+ *
+ * v4.7: in addition to the exact parent+name match, an entry whose
+ * name starts with the configured package name (followed by a name
+ * separator / alnum) is hidden everywhere.  This covers Android
+ * install dirs like /data/app/~~x==/<pkg>-<random> whose random
+ * directory cannot be known ahead of time.
  */
 bool pmk_filter_dirent(const char *name, const struct inode *dir)
 {
 	unsigned int i;
+	size_t plen;
 
 	if (!hide_dirents || !hook_getdents || !target_count || !dir || !name)
 		return false;
@@ -207,12 +219,25 @@ bool pmk_filter_dirent(const char *name, const struct inode *dir)
 		return false;
 
 	for (i = 0; i < target_count; i++) {
-		if (!targets[i].parent_ok)
-			continue;
-		if (dir->i_ino == targets[i].parent_ino &&
+		if (targets[i].parent_ok &&
+		    dir->i_ino == targets[i].parent_ino &&
 		    dir->i_sb && dir->i_sb->s_dev == targets[i].parent_dev &&
 		    strcmp(name, targets[i].name) == 0)
 			return true;
+
+		if (targets[i].have_pkg) {
+			char c;
+
+			plen = strlen(targets[i].pkg);
+			if (plen && strncmp(name, targets[i].pkg, plen) == 0) {
+				c = name[plen];
+				if (c == '\0' || c == '-' || c == '_' || c == '.' ||
+				    (c >= '0' && c <= '9') ||
+				    (c >= 'a' && c <= 'z') ||
+				    (c >= 'A' && c <= 'Z'))
+					return true;
+			}
+		}
 	}
 	return false;
 }
@@ -323,6 +348,16 @@ static void unregister_perm_getattr_hooks(void)
 
 /* --------------------------- target resolution --------------------------- */
 
+static void set_target_pkg(struct hidden_target *t, const char *path_str)
+{
+	const char *slash = strrchr(path_str, '/');
+
+	if (slash && slash[1]) {
+		strscpy(t->pkg, slash + 1, sizeof(t->pkg));
+		t->have_pkg = true;
+	}
+}
+
 static int add_target_path(const char *path_str)
 {
 	struct path path;
@@ -362,6 +397,7 @@ static int add_target_path(const char *path_str)
 				sizeof(targets[target_count].name));
 		}
 	}
+	set_target_pkg(&targets[target_count], path_str);
 
 	path_put(&path);
 
@@ -392,6 +428,7 @@ static int add_target_path(const char *path_str)
 					}
 				}
 			}
+			set_target_pkg(&targets[target_count], alias);
 			path_put(&path);
 		}
 	} else if (strncmp(path_str, "/data/user/0/", 13) == 0) {
@@ -420,6 +457,7 @@ static int add_target_path(const char *path_str)
 					}
 				}
 			}
+			set_target_pkg(&targets[target_count], alias);
 			path_put(&path);
 		}
 	}
@@ -576,7 +614,7 @@ module_param_cb(reload, &reload_ops, NULL, 0600);
 static int status_get(char *buffer, const struct kernel_param *kp)
 {
 	return scnprintf(buffer, PAGE_SIZE,
-			 "pkgmask v4.6\n"
+			 "pkgmask v4.7\n"
 			 "scope=%s targets=%u deny=%u allow=%u\n"
 			 "hide_dirents=%d hook_getdents=%d hook_perm=%d hook_getattr=%d\n"
 			 "syscall_hooks=%d binder_enabled=%d (inert)\n",
@@ -601,7 +639,7 @@ static int __init pkgmask_init(void)
 	if (ret)
 		pr_info(PM_LOG_PREFIX "initial perm/getattr hooks skipped (%d)\n", ret);
 
-	pr_info(PM_LOG_PREFIX "v4.6 built-in initialized (nothing hidden until configured)\n");
+	pr_info(PM_LOG_PREFIX "v4.7 built-in initialized (nothing hidden until configured)\n");
 	return 0;
 }
 
@@ -616,4 +654,4 @@ module_exit(pkgmask_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("pkgmask");
-MODULE_DESCRIPTION("pkgmask v4.6 kernel-level package hiding (built-in)");
+MODULE_DESCRIPTION("pkgmask v4.7 kernel-level package hiding (built-in)");
