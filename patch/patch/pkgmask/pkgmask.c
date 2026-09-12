@@ -18,7 +18,8 @@
  *   - stat / open hiding via inode_permission + vfs_getattr kretprobes.
  *   - v4.9: target_paths tokens are trimmed of trailing whitespace/newline
  *     so echo/printf writes both work (echo appends '\n').
- *   - v4.9: /proc process-name hiding (hide_proc_enabled + hide_proc_names),
+ *   - v4.9: /proc process-name hiding (hide_proc_enabled + hide_proc_names);
+ *     PID-string entries resolved to task->comm for matching.
  *     hide_dirents/hook_getdents default to 1 so SUSFS guard's
  *     pkgmask_setup.sh (which does not write them) still gets readdir hiding.
  *     compatible with SUSFS Env Guard's pkgmask integration.
@@ -56,6 +57,8 @@
 #include <linux/fdtable.h>
 #include <linux/version.h>
 #include <linux/magic.h>
+#include <linux/pid.h>
+#include <linux/rcupdate.h>
 #include <linux/mm.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
@@ -239,14 +242,35 @@ bool pmk_filter_dirent(const char *name, const struct inode *dir)
 	if (!should_hide_for_current())
 		return false;
 
-	/* /proc process-name hiding (independent of target list) */
-	if (dir->i_sb && dir->i_sb->s_magic == PROC_SUPER_MAGIC &&
-	    hide_proc_enabled && proc_name_count) {
-		unsigned int j;
+	/* /proc process-name hiding:
+	 * name is the PID string (e.g. "1234"), not the process name.
+	 * Resolve PID -> task_struct->comm and compare against the list.
+	 * Only apply at the /proc root (i_ino == 1). kstrtoint avoids a
+	 * long->int truncation hazard in 64-bit builds.
+	 */
+	if (hide_proc_enabled && proc_name_count &&
+	    dir->i_sb && dir->i_sb->s_magic == PROC_SUPER_MAGIC &&
+	    dir->i_ino == 1) {
+		int lpid;
+		pid_t pid;
 
-		for (j = 0; j < proc_name_count; j++)
-			if (strcmp(name, proc_names[j]) == 0)
-				return true;
+		if (kstrtoint(name, 10, &lpid) == 0 && lpid > 0) {
+			struct task_struct *task;
+			unsigned int j;
+
+			pid = (pid_t)lpid;
+			rcu_read_lock();
+			task = find_task_by_vpid(pid);
+			if (task) {
+				for (j = 0; j < proc_name_count; j++) {
+					if (strcmp(task->comm, proc_names[j]) == 0) {
+						rcu_read_unlock();
+						return true;
+					}
+				}
+			}
+			rcu_read_unlock();
+		}
 	}
 
 	if (!target_count)
