@@ -920,6 +920,12 @@ MODULE_LICENSE("GPL");
  * Parcel layout exactly: offsets stay valid, system_server is never touched and
  * no AIDL structure is parsed, so there is no crash surface.
  */
+int pmk_binder_filter_active(void)
+{
+	return binder_enabled && binder_hide_pkg_count > 0;
+}
+EXPORT_SYMBOL_GPL(pmk_binder_filter_active);
+
 int pmk_filter_binder_data_for(char *data, size_t size, uid_t target_uid)
 {
 	unsigned int i, j;
