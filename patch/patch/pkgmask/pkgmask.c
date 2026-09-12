@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * pkgmask v4.8 -- kernel-level app package / directory hiding
+ * pkgmask v4.9 -- kernel-level app package / directory hiding
  *
  * Why built-in: the hiding entry point for readdir is a strong
  * definition of pmk_filter_dirent() that overrides the __weak default
@@ -16,6 +16,10 @@
  *   - readdir hiding via filldir64/filldir weak hook (zero-width
  *     immune, matches by parent dir (dev,ino) + entry name).
  *   - stat / open hiding via inode_permission + vfs_getattr kretprobes.
+ *   - v4.9: target_paths tokens are trimmed of trailing whitespace/newline
+ *     so echo/printf writes both work (echo appends '\n').
+ *   - v4.9: /proc process-name hiding (hide_proc_enabled + hide_proc_names),
+ *     compatible with SUSFS Env Guard's pkgmask integration.
  *
  * Runtime configuration (live, no reboot):
  *   /sys/module/pkgmask/parameters/target_paths   e.g.
@@ -49,6 +53,7 @@
 #include <linux/syscalls.h>
 #include <linux/fdtable.h>
 #include <linux/version.h>
+#include <linux/magic.h>
 #include <linux/mm.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
@@ -105,6 +110,20 @@ MODULE_PARM_DESC(target_paths, "Comma-separated absolute paths to hide");
 static char syscall_hooks[PM_SYSCALL_HOOKS_LEN];
 module_param_string(syscall_hooks, syscall_hooks, sizeof(syscall_hooks), 0600);
 MODULE_PARM_DESC(syscall_hooks, "Comma-separated syscall fallback subset");
+
+/* SUSFS guard compatible: /proc process-name hiding (v4.9) */
+static bool hide_proc_enabled;
+module_param(hide_proc_enabled, bool, 0600);
+MODULE_PARM_DESC(hide_proc_enabled, "Hide /proc entries matching hide_proc_names (SUSFS guard)");
+
+#define MAX_HIDE_PROC_NAMES 16
+#define HIDE_PROC_NAMES_LEN 256
+static char hide_proc_names_buf[HIDE_PROC_NAMES_LEN];
+static char proc_names[MAX_HIDE_PROC_NAMES][TARGET_TEXT_LEN];
+static unsigned int proc_name_count;
+module_param_string(hide_proc_names, hide_proc_names_buf,
+		    sizeof(hide_proc_names_buf), 0600);
+MODULE_PARM_DESC(hide_proc_names, "Comma-separated process names to hide in /proc");
 
 /* Binder params kept for WebUI compatibility (v4.6: inert, no binder.c hook) */
 static char binder_hide_packages[1024];
@@ -213,9 +232,22 @@ bool pmk_filter_dirent(const char *name, const struct inode *dir)
 	unsigned int i;
 	size_t plen;
 
-	if (!hide_dirents || !hook_getdents || !target_count || !dir || !name)
+	if (!hide_dirents || !hook_getdents || !dir || !name)
 		return false;
 	if (!should_hide_for_current())
+		return false;
+
+	/* /proc process-name hiding (independent of target list) */
+	if (dir->i_sb && dir->i_sb->s_magic == PROC_SUPER_MAGIC &&
+	    hide_proc_enabled && proc_name_count) {
+		unsigned int j;
+
+		for (j = 0; j < proc_name_count; j++)
+			if (strcmp(name, proc_names[j]) == 0)
+				return true;
+	}
+
+	if (!target_count)
 		return false;
 
 	for (i = 0; i < target_count; i++) {
@@ -488,6 +520,13 @@ static int resolve_target_paths(const char *buf)
 		if (comma)
 			*comma = '\0';
 		tok = tok + strspn(tok, " \t");
+		/* v4.9: strip trailing whitespace/newline (echo writes '\n') */
+		{
+			size_t tl = strlen(tok);
+			while (tl > 0 && (tok[tl - 1] == '\n' || tok[tl - 1] == '\r' ||
+					  tok[tl - 1] == ' ' || tok[tl - 1] == '\t'))
+				tok[--tl] = '\0';
+		}
 		if (*tok) {
 			ret = add_target_path(tok);
 			if (ret == 0)
@@ -552,6 +591,35 @@ static int parse_uid_list(const char *buf, uid_t *list, unsigned int *count,
 	return ret;
 }
 
+static void parse_hide_proc_names(const char *buf)
+{
+	char tmp[HIDE_PROC_NAMES_LEN];
+	char *tok;
+	char *comma;
+
+	proc_name_count = 0;
+	strscpy(tmp, buf, sizeof(tmp));
+	tok = tmp;
+	while (tok && *tok && proc_name_count < MAX_HIDE_PROC_NAMES) {
+		comma = strchr(tok, ',');
+		if (comma)
+			*comma = '\0';
+		tok = tok + strspn(tok, " \t");
+		if (*tok) {
+			size_t tl = strlen(tok);
+			while (tl > 0 && (tok[tl - 1] == '\n' || tok[tl - 1] == '\r' ||
+					  tok[tl - 1] == ' ' || tok[tl - 1] == '\t'))
+				tok[--tl] = '\0';
+			if (*tok) {
+				strscpy(proc_names[proc_name_count], tok,
+					sizeof(proc_names[0]));
+				proc_name_count++;
+			}
+		}
+		tok = comma ? comma + 1 : NULL;
+	}
+}
+
 static void unregister_all_hooks(void)
 {
 	unregister_perm_getattr_hooks();
@@ -579,6 +647,7 @@ static int apply_config(void)
 		return -EINVAL;
 	}
 	resolve_target_paths(target_paths);
+	parse_hide_proc_names(hide_proc_names_buf);
 
 	if (hook_perm || hook_getattr)
 		register_perm_getattr_hooks();
@@ -587,7 +656,8 @@ static int apply_config(void)
 		"dirents=%d getdents=%d perm=%d getattr=%d\n",
 		scope_mode, target_count, deny_uid_count, allow_uid_count,
 		hide_dirents ? 1 : 0, hook_getdents ? 1 : 0,
-		hook_perm ? 1 : 0, hook_getattr ? 1 : 0);
+		hook_perm ? 1 : 0, hook_getattr ? 1 : 0,
+		hide_proc_enabled ? 1 : 0, proc_name_count);
 	return 0;
 }
 
@@ -618,14 +688,16 @@ module_param_cb(reload, &reload_ops, NULL, 0600);
 static int status_get(char *buffer, const struct kernel_param *kp)
 {
 	return scnprintf(buffer, PAGE_SIZE,
-			 "pkgmask v4.8\n"
+			 "pkgmask v4.9\n"
 			 "scope=%s targets=%u deny=%u allow=%u\n"
 			 "hide_dirents=%d hook_getdents=%d hook_perm=%d hook_getattr=%d\n"
-			 "syscall_hooks=%d binder_enabled=%d (inert)\n",
+			 "syscall_hooks=%d binder_enabled=%d (inert)\n"
+			 "hide_proc_enabled=%d proc_names=%u\n",
 			 scope_mode, target_count, deny_uid_count, allow_uid_count,
 			 hide_dirents ? 1 : 0, hook_getdents ? 1 : 0,
 			 hook_perm ? 1 : 0, hook_getattr ? 1 : 0,
-			 enable_syscall_hooks ? 1 : 0, binder_enabled ? 1 : 0);
+			 enable_syscall_hooks ? 1 : 0, binder_enabled ? 1 : 0,
+			 hide_proc_enabled ? 1 : 0, proc_name_count);
 }
 
 static struct kernel_param_ops status_ops = {
@@ -643,7 +715,7 @@ static int __init pkgmask_init(void)
 	if (ret)
 		pr_info(PM_LOG_PREFIX "initial perm/getattr hooks skipped (%d)\n", ret);
 
-	pr_info(PM_LOG_PREFIX "v4.8 built-in initialized (nothing hidden until configured)\n");
+	pr_info(PM_LOG_PREFIX "v4.9 built-in initialized (nothing hidden until configured)\n");
 	return 0;
 }
 
@@ -658,4 +730,4 @@ module_exit(pkgmask_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("pkgmask");
-MODULE_DESCRIPTION("pkgmask v4.8 kernel-level package hiding (built-in)");
+MODULE_DESCRIPTION("pkgmask v4.9 kernel-level package hiding (built-in)");
