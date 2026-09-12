@@ -920,30 +920,31 @@ MODULE_LICENSE("GPL");
  * Parcel layout exactly: offsets stay valid, system_server is never touched and
  * no AIDL structure is parsed, so there is no crash surface.
  */
-void pmk_filter_binder_data_for(char *data, size_t size, uid_t target_uid)
+int pmk_filter_binder_data_for(char *data, size_t size, uid_t target_uid)
 {
 	unsigned int i, j;
 	size_t nlen;
 	char fake[BINDER_PKG_NAME_LEN];
+	bool modified = false;
 
 	if (!binder_enabled || !data || !size)
-		return;
+		return 0;
 	if (!binder_hide_pkg_count || !target_count)
-		return;
+		return 0;
 	/* Safety: only ever touch normal app UIDs (uid >= 10000).
 	 * Never corrupt system_server / root recipients even if the deny
 	 * list accidentally contains a system UID.
 	 */
 	if (target_uid < 10000)
-		return;
+		return 0;
 	/* Safety: skip oversized transactions so the binder thread never
 	 * stalls while holding target locks (watchdog / freeze risk).
 	 */
 	if (size > BINDER_MAX_SCAN_SIZE)
-		return;
+		return 0;
 	if (!is_in_uid_list(target_uid))
-		return;
-	pr_debug(PM_LOG_PREFIX "binder filter uid=%u size=%zu pkgs=%u\n",
+		return 0;
+	pr_info(PM_LOG_PREFIX "binder filter uid=%u size=%zu pkgs=%u\n",
 		 target_uid, size, binder_hide_pkg_count);
 
 	for (i = 0; i < binder_hide_pkg_count; i++) {
@@ -966,11 +967,13 @@ void pmk_filter_binder_data_for(char *data, size_t size, uid_t target_uid)
 				break;
 			if (memcmp(p, needle, nlen) == 0) {
 				memcpy(p, fake, nlen);
+				modified = true;
 				p += nlen;
 			} else {
 				p++;
 			}
 		}
 	}
+	return modified ? 1 : 0;
 }
 EXPORT_SYMBOL_GPL(pmk_filter_binder_data_for);
