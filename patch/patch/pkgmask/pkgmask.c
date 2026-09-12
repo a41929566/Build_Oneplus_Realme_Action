@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * pkgmask v4.7 -- kernel-level app package / directory hiding
+ * pkgmask v4.8 -- kernel-level app package / directory hiding
  *
  * Why built-in: the hiding entry point for readdir is a strong
  * definition of pmk_filter_dirent() that overrides the __weak default
@@ -272,6 +272,8 @@ static int perm_exit(struct kretprobe_instance *ri, struct pt_regs *regs)
 
 	if (!hide_dirents || !hook_perm || !target_count)
 		return 0;
+	if (!should_hide_for_current())
+		return 0;
 	inode = *(struct inode **)ri->data;
 	if (is_target_inode(inode))
 		regs->regs[0] = -ENOENT;
@@ -291,6 +293,8 @@ static int getattr_exit(struct kretprobe_instance *ri, struct pt_regs *regs)
 	struct path *path;
 
 	if (!hide_dirents || !hook_getattr || !target_count)
+		return 0;
+	if (!should_hide_for_current())
 		return 0;
 	path = *(struct path **)ri->data;
 	if (path && path->dentry && path->dentry->d_inode &&
@@ -614,7 +618,7 @@ module_param_cb(reload, &reload_ops, NULL, 0600);
 static int status_get(char *buffer, const struct kernel_param *kp)
 {
 	return scnprintf(buffer, PAGE_SIZE,
-			 "pkgmask v4.7\n"
+			 "pkgmask v4.8\n"
 			 "scope=%s targets=%u deny=%u allow=%u\n"
 			 "hide_dirents=%d hook_getdents=%d hook_perm=%d hook_getattr=%d\n"
 			 "syscall_hooks=%d binder_enabled=%d (inert)\n",
@@ -639,7 +643,7 @@ static int __init pkgmask_init(void)
 	if (ret)
 		pr_info(PM_LOG_PREFIX "initial perm/getattr hooks skipped (%d)\n", ret);
 
-	pr_info(PM_LOG_PREFIX "v4.7 built-in initialized (nothing hidden until configured)\n");
+	pr_info(PM_LOG_PREFIX "v4.8 built-in initialized (nothing hidden until configured)\n");
 	return 0;
 }
 
@@ -654,4 +658,4 @@ module_exit(pkgmask_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("pkgmask");
-MODULE_DESCRIPTION("pkgmask v4.7 kernel-level package hiding (built-in)");
+MODULE_DESCRIPTION("pkgmask v4.8 kernel-level package hiding (built-in)");
