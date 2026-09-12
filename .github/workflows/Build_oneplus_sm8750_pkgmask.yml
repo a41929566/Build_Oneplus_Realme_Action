@@ -617,9 +617,9 @@ jobs:
           if n != 1:
               sys.stderr.write("binder anchor count=%d\n" % n)
               sys.exit(1)
-          inject = anchor + """\t{\n\t\tunsigned int _pmk_uid = __kuid_val(target_proc->cred->uid);\n\t\tif (pmk_binder_filter_active() && _pmk_uid >= 10000) {\n\t\t\tsize_t _pmk_sz = tr->data_size;\n\t\t\tif (_pmk_sz > 0 && _pmk_sz <= 1048576) {\n\t\t\t\tvoid *_pmk_buf = kmalloc(_pmk_sz, GFP_ATOMIC);\n\t\t\t\tif (_pmk_buf) {\n\t\t\t\t\tif (!binder_alloc_copy_from_buffer(&target_proc->alloc, t->buffer, _pmk_buf, 0, _pmk_sz)) {\n\t\t\t\t\t\tif (pmk_filter_binder_data_for(_pmk_buf, _pmk_sz, _pmk_uid))\n\t\t\t\t\t\t\tbinder_alloc_copy_to_buffer(&target_proc->alloc, t->buffer, 0, _pmk_buf, _pmk_sz);\n\t\t\t\t\t}\n\t\t\t\t\tkfree(_pmk_buf);\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n"""
+          inject = anchor + """\t{\n\t\tunsigned int _pmk_uid = __kuid_val(target_proc->cred->uid);\n\t\tif (pmk_binder_uid_matched(_pmk_uid)) {\n\t\t\tsize_t _pmk_sz = tr->data_size;\n\t\t\tif (_pmk_sz > 0 && _pmk_sz <= 1048576) {\n\t\t\t\tvoid *_pmk_buf = kmalloc(_pmk_sz, GFP_ATOMIC);\n\t\t\t\tif (_pmk_buf) {\n\t\t\t\t\tint _pmk_cr = binder_alloc_copy_from_buffer(&target_proc->alloc, t->buffer, _pmk_buf, 0, _pmk_sz);\n\t\t\t\t\tpr_info("pkgmask: binder tx uid=%u size=%zu copy_ret=%d\\n", _pmk_uid, _pmk_sz, _pmk_cr);\n\t\t\t\t\tif (!_pmk_cr) {\n\t\t\t\t\t\tif (pmk_filter_binder_data_for(_pmk_buf, _pmk_sz, _pmk_uid))\n\t\t\t\t\t\t\tbinder_alloc_copy_to_buffer(&target_proc->alloc, t->buffer, 0, _pmk_buf, _pmk_sz);\n\t\t\t\t\t}\n\t\t\t\t\tkfree(_pmk_buf);\n\t\t\t\t}\n\t\t\t}\n\t\t}\n\t}\n"""
           c = c.replace(anchor, inject, 1)
-          decl = "extern int pmk_binder_filter_active(void);\nextern int pmk_filter_binder_data_for(char *data, unsigned long size, unsigned int target_uid);\n"
+          decl = "extern int pmk_binder_uid_matched(unsigned int uid);\nextern int pmk_filter_binder_data_for(char *data, unsigned long size, unsigned int target_uid);\n"
           if decl not in c:
               m = re.search(r"#include <[^>]+>\n", c)
               if m:
