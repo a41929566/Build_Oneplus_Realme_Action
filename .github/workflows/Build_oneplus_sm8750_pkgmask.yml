@@ -602,22 +602,30 @@ jobs:
           import sys
           p = 'drivers/android/binder.c'
           c = open(p, encoding='utf-8', errors='ignore').read()
-          anchor = "if (copy_to_user(ptr, t->buffer->data, t->buffer->data_size)) {"
+          anchor = '''\tret = binder_do_deferred_txn_copies(&target_proc->alloc, t->buffer,
+\t\t\t\t\t    &sgc_head, &pf_head);
+\tif (ret) {
+\t\tbinder_user_error("%d:%d got transaction with invalid offsets ptr\\n",
+\t\t\t\t  proc->pid, thread->pid);
+\t\treturn_error = BR_FAILED_REPLY;
+\t\treturn_error_param = ret;
+\t\treturn_error_line = __LINE__;
+\t\tgoto err_copy_data_failed;
+\t}
+'''
           n = c.count(anchor)
           if n != 1:
               sys.stderr.write("binder anchor count=%d\n" % n)
               sys.exit(1)
-          inject = ("{\n"
-                    "\t\tpkgmask_filter_binder_data(t->buffer->data, t->buffer->data_size);\n"
-                    "\t}\n\t" + anchor)
+          inject = anchor + "\tpkgmask_filter_binder_data_for((char *)(uintptr_t)t->buffer->user_data, tr->data_size,\n\t\t\t\t      __kuid_val(target_proc->cred->uid));\n"
           c = c.replace(anchor, inject, 1)
-          decl = "extern void pkgmask_filter_binder_data(char *data, size_t size);\n"
+          decl = "extern void pkgmask_filter_binder_data_for(char *data, size_t size, uid_t target_uid);\n"
           if decl not in c:
               c = decl + c
           open(p, 'w', encoding='utf-8').write(c)
           print("binder.c patched OK")
           PY
-          echo "✅ PkgMask binder 过滤已应用 (reply 等长替换)"
+          echo "✅ PkgMask binder 过滤已应用 (target-uid 等长替换)"
       - name: 🔧 Set gki_defconfig (设置编译配置) 
         run: |
           cd kernel_workspace
