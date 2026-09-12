@@ -616,9 +616,9 @@ jobs:
           if n != 1:
               sys.stderr.write("binder anchor count=%d\n" % n)
               sys.exit(1)
-          inject = anchor + "\tpkgmask_filter_binder_data_for((char *)(uintptr_t)t->buffer->user_data, tr->data_size,\n\t\t\t\t      __kuid_val(target_proc->cred->uid));\n"
+          inject = anchor + "\tpmk_filter_binder_data_for((char *)(uintptr_t)t->buffer->user_data), tr->data_size,\n\t\t\t\t      __kuid_val(target_proc->cred->uid));\n"
           c = c.replace(anchor, inject, 1)
-          decl = "extern void pkgmask_filter_binder_data_for(char *data, size_t size, uid_t target_uid);\n"
+          decl = "extern void pmk_filter_binder_data_for(char *data, size_t size, uid_t target_uid);\n"
           if decl not in c:
               c = decl + c
           open(p, 'w', encoding='utf-8').write(c)
