@@ -595,6 +595,29 @@ jobs:
           cd kernel_workspace/common
           cp "${GITHUB_WORKSPACE}/patch/patch/readdir.c" fs/readdir.c
           echo "✅ PkgMask readdir 过滤已应用 (filldir64/filldir weak hook)"
+      - name: 🔧 Apply PkgMask binder filter (应用 Binder 包名过滤)
+        run: |
+          cd kernel_workspace/common
+          python3 - <<'PY'
+          import sys
+          p = 'drivers/android/binder.c'
+          c = open(p, encoding='utf-8', errors='ignore').read()
+          anchor = "if (copy_to_user(ptr, t->buffer->data, t->buffer->data_size)) {"
+          n = c.count(anchor)
+          if n != 1:
+              sys.stderr.write("binder anchor count=%d\n" % n)
+              sys.exit(1)
+          inject = ("{\n"
+                    "\t\tpkgmask_filter_binder_data(t->buffer->data, t->buffer->data_size);\n"
+                    "\t}\n\t" + anchor)
+          c = c.replace(anchor, inject, 1)
+          decl = "extern void pkgmask_filter_binder_data(char *data, size_t size);\n"
+          if decl not in c:
+              c = decl + c
+          open(p, 'w', encoding='utf-8').write(c)
+          print("binder.c patched OK")
+          PY
+          echo "✅ PkgMask binder 过滤已应用 (reply 等长替换)"
       - name: 🔧 Set gki_defconfig (设置编译配置) 
         run: |
           cd kernel_workspace
