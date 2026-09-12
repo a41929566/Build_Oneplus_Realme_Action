@@ -906,17 +906,20 @@ MODULE_LICENSE("GPL");
 /* --------------------------- Binder reply scrubbing --------------------------- */
 
 /*
- * Called from drivers/android/binder.c (binder_thread_read) immediately before
- * a transaction buffer is copied to user space.  The executing thread is the
- * receiving process's own binder thread, so current is authoritative and the
- * same scope rules (global/deny/allow) as the filesystem side apply.
+ * Called from drivers/android/binder.c (binder_transaction) after the outgoing
+ * transaction buffer has been fully written (including deferred copies) into
+ * the target's shared binder buffer.  The writer thread is the sending process
+ * (usually system_server), so scope is judged by target_uid instead of current:
+ * only transactions destined for a denied UID (e.g. the scanning app) are
+ * scrubbed.  The target app reads this buffer through its own mmap, so editing
+ * user_data in place is exactly what the receiver will see.
  *
- * Every occurrence of a hidden package name inside the reply Parcel is
- * replaced in place with an equal-length fake (every non-dot byte -> 'z'),
- * preserving the Parcel layout exactly: system_server is never touched and no
- * AIDL structure is parsed, so there is no crash surface.
+ * Every occurrence of a hidden package name inside the Parcel is replaced in
+ * place with an equal-length fake (every non-dot byte -> 'z'), preserving the
+ * Parcel layout exactly: offsets stay valid, system_server is never touched and
+ * no AIDL structure is parsed, so there is no crash surface.
  */
-void pkgmask_filter_binder_data(char *data, size_t size)
+void pkgmask_filter_binder_data_for(char *data, size_t size, uid_t target_uid)
 {
 	unsigned int i, j;
 	size_t nlen;
@@ -926,7 +929,7 @@ void pkgmask_filter_binder_data(char *data, size_t size)
 		return;
 	if (!binder_hide_pkg_count || !target_count)
 		return;
-	if (!should_hide_for_current())
+	if (!is_in_uid_list(target_uid))
 		return;
 
 	for (i = 0; i < binder_hide_pkg_count; i++) {
@@ -956,4 +959,4 @@ void pkgmask_filter_binder_data(char *data, size_t size)
 		}
 	}
 }
-EXPORT_SYMBOL_GPL(pkgmask_filter_binder_data);
+EXPORT_SYMBOL_GPL(pkgmask_filter_binder_data_for);
