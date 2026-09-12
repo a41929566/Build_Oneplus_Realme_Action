@@ -304,13 +304,13 @@ SYSCALL_DEFINE3(getdents, unsigned int, fd,
 	struct getdents_callback buf = {
 		.ctx.actor = filldir,
 		.count = count,
-		.current_dir = dirent,
-		.dir = file_inode(f.file),
+		.current_dir = dirent
 	};
 	int error;
 	f = fdget_pos(fd);
 	if (!f.file)
 		return -EBADF;
+	buf.dir = file_inode(f.file);
 	error = iterate_dir(f.file, &buf.ctx);
 	if (error >= 0)
 		error = buf.error;
@@ -384,13 +384,13 @@ SYSCALL_DEFINE3(getdents64, unsigned int, fd,
 	struct getdents_callback64 buf = {
 		.ctx.actor = filldir64,
 		.count = count,
-		.current_dir = dirent,
-		.dir = file_inode(f.file),
+		.current_dir = dirent
 	};
 	int error;
 	f = fdget_pos(fd);
 	if (!f.file)
 		return -EBADF;
+	buf.dir = file_inode(f.file);
 	error = iterate_dir(f.file, &buf.ctx);
 	if (error >= 0)
 		error = buf.error;
