@@ -30,7 +30,7 @@
  * hides directory entries for configured package names from configured
  * UIDs.  The weak default keeps the core kernel linkable without it.
  */
-bool __weak pkgmask_filter_dirent(const char *name, const struct inode *dir)
+bool __weak pmk_filter_dirent(const char *name, const struct inode *dir)
 {
 	return false;
 }
@@ -276,7 +276,7 @@ static bool filldir(struct dir_context *ctx, const char *name, int namlen,
 	unsigned long d_ino;
 
 	/* pkgmask v3.2: drop hidden entries at the source */
-	if (pkgmask_filter_dirent(name, buf->dir))
+	if (pmk_filter_dirent(name, buf->dir))
 		return true;
 	int reclen = ALIGN(offsetof(struct linux_dirent, d_name) + namlen + 2,
 		sizeof(long));
@@ -372,7 +372,7 @@ static bool filldir64(struct dir_context *ctx, const char *name, int namlen,
 		sizeof(u64));
 
 	/* pkgmask v3.2: drop hidden entries at the source */
-	if (pkgmask_filter_dirent(name, buf->dir))
+	if (pmk_filter_dirent(name, buf->dir))
 		return true;
 	int prev_reclen;
 
@@ -542,7 +542,7 @@ static bool compat_filldir(struct dir_context *ctx, const char *name, int namlen
 	compat_ulong_t d_ino;
 
 	/* pkgmask v3.2: drop hidden entries at the source */
-	if (pkgmask_filter_dirent(name, buf->dir))
+	if (pmk_filter_dirent(name, buf->dir))
 		return true;
 	int reclen = ALIGN(offsetof(struct compat_linux_dirent, d_name) +
 		namlen + 2, sizeof(compat_long_t));
