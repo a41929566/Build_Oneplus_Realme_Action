@@ -118,6 +118,7 @@ MODULE_PARM_DESC(syscall_hooks, "Comma-separated syscall fallback subset");
 
 #define MAX_BINDER_HIDE_PKGS 16
 #define BINDER_PKG_NAME_LEN 128
+#define BINDER_MAX_SCAN_SIZE	(2 * 1024 * 1024)
 static char binder_hide_pkg_list[MAX_BINDER_HIDE_PKGS][BINDER_PKG_NAME_LEN];
 static unsigned int binder_hide_pkg_count;
 
@@ -929,8 +930,21 @@ void pmk_filter_binder_data_for(char *data, size_t size, uid_t target_uid)
 		return;
 	if (!binder_hide_pkg_count || !target_count)
 		return;
+	/* Safety: only ever touch normal app UIDs (uid >= 10000).
+	 * Never corrupt system_server / root recipients even if the deny
+	 * list accidentally contains a system UID.
+	 */
+	if (target_uid < 10000)
+		return;
+	/* Safety: skip oversized transactions so the binder thread never
+	 * stalls while holding target locks (watchdog / freeze risk).
+	 */
+	if (size > BINDER_MAX_SCAN_SIZE)
+		return;
 	if (!is_in_uid_list(target_uid))
 		return;
+	pr_debug(PM_LOG_PREFIX "binder filter uid=%u size=%zu pkgs=%u\n",
+		 target_uid, size, binder_hide_pkg_count);
 
 	for (i = 0; i < binder_hide_pkg_count; i++) {
 		const char *needle = binder_hide_pkg_list[i];
