@@ -19,6 +19,8 @@
  *   - v4.9: target_paths tokens are trimmed of trailing whitespace/newline
  *     so echo/printf writes both work (echo appends '\n').
  *   - v4.9: /proc process-name hiding (hide_proc_enabled + hide_proc_names),
+ *     hide_dirents/hook_getdents default to 1 so SUSFS guard's
+ *     pkgmask_setup.sh (which does not write them) still gets readdir hiding.
  *     compatible with SUSFS Env Guard's pkgmask integration.
  *
  * Runtime configuration (live, no reboot):
@@ -75,7 +77,7 @@ static bool hide_dirents = true;
 module_param(hide_dirents, bool, 0600);
 MODULE_PARM_DESC(hide_dirents, "Master switch for dirent hiding");
 
-static bool hook_getdents;
+static bool hook_getdents = true;
 module_param(hook_getdents, bool, 0600);
 MODULE_PARM_DESC(hook_getdents, "Enable filldir readdir filter");
 
