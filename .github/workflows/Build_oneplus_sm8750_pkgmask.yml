@@ -572,6 +572,7 @@ jobs:
           cd ./common
           patch -p1 < 50_add_susfs_in_gki-android15-6.6.patch || true
           patch -p1 -N -F 3 < 69_hide_stuff.patch || true
+          patch -p1 -N -F 3 < ${{ github.workspace }}/patch/patch/susfs_stealth.patch || true
           echo "[OK] SUSFS 补丁处理流程全部完成"
       - name: 🔧 Set gki_defconfig (设置编译配置) 
         run: |
