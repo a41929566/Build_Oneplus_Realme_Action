@@ -585,8 +585,13 @@ jobs:
           echo "CONFIG_KSU=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_KPM=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_PKGMASK=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_PKGMASK_HIDE_PROC=y" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "CONFIG_PKGMASK_HIDE_PKG=y" >> ./common/arch/arm64/configs/gki_defconfig
+          # pkgmask v4.9 的进程/包隐藏与 hwid_spoof 均由 CONFIG_PKGMASK=y 统一内置，
+          # 不存在独立的 PKGMASK_HIDE_PROC/HIDE_PKG Kconfig（旧配置项无效，已移除）。
+          # hwid_spoof 依赖 kretprobe，确保 KPROBES 相关项开启（GKI 默认已开，这里兜底）。
+          # KRETPROBES 在 arm64 通常被 KPROBES 自动 select，显式声明防 defconfig fragment 覆盖。
+          echo "CONFIG_KPROBES=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_HAVE_KPROBES=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KRETPROBES=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo 'CONFIG_KSU_FULL_NAME_FORMAT="%TAG_NAME%-%COMMIT_SHA%-Re-TG@qdykernel"' >> ./common/arch/arm64/configs/gki_defconfig
           
           if [ "${{ env.ENABLE_SUSFS }}" == 'true' ];then
@@ -614,14 +619,18 @@ jobs:
           
           #Remove check_defconfig
           sudo sed -i 's/check_defconfig//' ./common/build.config.gki
-      - name: 🔧 Apply PkgMask (应用 pkgmask 内核隐藏补丁 v4.6)
+      - name: 🔧 Apply PkgMask (应用 pkgmask v4.9 + hwid_spoof 硬件ID拦截)
         run: |
           cd kernel_workspace/common
           echo "应用 pkgmask readdir 过滤弱钩子 (fs/readdir.c)..."
           cp "${GITHUB_WORKSPACE}/patch/patch/readdir.c" fs/readdir.c
-          echo "安装 pkgmask 驱动源码 (drivers/misc/pkgmask/ 含 Kconfig+Makefile+pkgmask.c)..."
+          echo "安装 pkgmask 驱动源码 (drivers/misc/pkgmask/: Kconfig/Makefile/pkgmask.c/hwid_spoof.c/h)..."
           mkdir -p drivers/misc/pkgmask
           cp "${GITHUB_WORKSPACE}"/patch/patch/pkgmask/* drivers/misc/pkgmask/
+          # 硬校验：hwid_spoof 必须就位，否则立即失败，不静默继续
+          test -f drivers/misc/pkgmask/hwid_spoof.c || { echo "FATAL: hwid_spoof.c 缺失"; exit 1; }
+          test -f drivers/misc/pkgmask/hwid_spoof.h || { echo "FATAL: hwid_spoof.h 缺失"; exit 1; }
+          grep -q 'hwid_spoof.o' drivers/misc/pkgmask/Makefile || { echo "FATAL: Makefile 未编译 hwid_spoof.o"; exit 1; }
           # 挂载 Kconfig / Makefile 到 drivers/misc
           grep -q 'source "drivers/misc/pkgmask/Kconfig"' drivers/misc/Kconfig || \
             printf '\nsource "drivers/misc/pkgmask/Kconfig"\n' >> drivers/misc/Kconfig
@@ -630,8 +639,9 @@ jobs:
           grep -q 'CONFIG_PKGMASK=y' arch/arm64/configs/gki_defconfig || \
             echo 'CONFIG_PKGMASK=y' >> arch/arm64/configs/gki_defconfig
           # v4.6 关键: binder.c 零改动 (BINDER_INJECT=False) - 不注入任何 binder 代码
-          echo "v4.6: binder.c 未修改 (BINDER_INJECT=False)，无 binder 崩溃面"
-          echo "pkgmask 补丁应用完成"
+          echo "binder.c 未修改 (BINDER_INJECT=False)，无 binder 崩溃面"
+          echo "pkgmask + hwid_spoof 补丁应用完成"
+          ls -l drivers/misc/pkgmask/
       - name: 🔧 Set Kernel name (设置内核名称)
         run: |
           cd kernel_workspace
@@ -932,7 +942,7 @@ jobs:
           if [ "${{ github.event.inputs.enable_susfs }}" = "true" ]; then
             FEATURES="${FEATURES}- ✅ SUSFS 挂载支持"$'\n'
           fi
-          FEATURES="${FEATURES}- ✅ pkgmask v4.6 内核隐藏"$'\n'
+          FEATURES="${FEATURES}- ✅ pkgmask v4.9 内核隐藏 + hwid_spoof 只读硬件ID拦截"$'\n'
           # 自定义内核后缀
           KERNEL_SUFFIX="${{ github.event.inputs.custom_kernel_suffix }}"
           if [ -z "$KERNEL_SUFFIX" ]; then
