@@ -48,6 +48,19 @@
  */
 
 #include <linux/kernel.h>
+/* 6.6/5.15+ moved va_list into its own header; module.h -> kobject.h needs
+ * it before anything else pulls kobject.h in. 4.9 has no linux/stdarg.h and
+ * gets va_list from the compiler <stdarg.h> instead. The branches are
+ * mutually exclusive to avoid any duplicate typedef. */
+#if defined(__has_include)
+# if __has_include(<linux/stdarg.h>)
+#  include <linux/stdarg.h>
+# else
+#  include <stdarg.h>
+# endif
+#else
+# include <stdarg.h>
+#endif
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/fs.h>
@@ -129,11 +142,20 @@ static unsigned int hwid_uid_count;
  * relying on strlcpy (deprecated) or strscpy (absent on older trees). */
 static void hwid_copy(char *dst, const char *src, size_t n)
 {
+	size_t i;
+
 	if (!n)
 		return;
-	if (src)
-		strncpy(dst, src, n - 1);
-	dst[n - 1] = '\0';
+	if (src) {
+		/* manual bounded copy: avoids strncpy -Wstringop-truncation
+		 * (which is -Werror on GKI) as well as strlcpy/strscpy, which
+		 * are deprecated / absent respectively on older trees. */
+		for (i = 0; i + 1 < n && src[i]; i++)
+			dst[i] = src[i];
+		dst[i] = '\0';
+	} else {
+		dst[0] = '\0';
+	}
 }
 
 /* sysfs store keeps the trailing '\n' (param_set_string does not strip it);
