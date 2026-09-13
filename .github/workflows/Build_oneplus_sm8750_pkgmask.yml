@@ -127,7 +127,7 @@ jobs:
             realme_GT7pro_Speed)
               echo "SCHED_FILE=oneplus_ace_6" >> $GITHUB_ENV
               ;;
-            realme_GT8)-
+            realme_GT8)
               echo "SCHED_FILE=oneplus_ace_6" >> $GITHUB_ENV
           esac
           if [ -z "${{ github.event.inputs.custom_kernel_suffix }}" ]; then
@@ -572,13 +572,21 @@ jobs:
           cd ./common
           patch -p1 < 50_add_susfs_in_gki-android15-6.6.patch || true
           patch -p1 -N -F 3 < 69_hide_stuff.patch || true
-          patch -p1 -N -F 3 < ${{ github.workspace }}/patch/patch/susfs_stealth.patch || true
+          if patch -p1 -N -F 3 < ${{ github.workspace }}/patch/patch/susfs_stealth.patch; then
+            echo "[OK] SUSFS stealth patch applied"
+            grep -q "ksdcardd" fs/susfs.c && echo "[OK] Verified: susfs_sdcard_monitor renamed to ksdcardd" || echo "[WARN] Rename verification failed"
+          else
+            echo "[WARN] SUSFS stealth patch FAILED to apply - stealth features will not be available"
+          fi
           echo "[OK] SUSFS 补丁处理流程全部完成"
       - name: 🔧 Set gki_defconfig (设置编译配置) 
         run: |
           cd kernel_workspace
           echo "CONFIG_KSU=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_KPM=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_PKGMASK=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_PKGMASK_HIDE_PROC=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_PKGMASK_HIDE_PKG=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo 'CONFIG_KSU_FULL_NAME_FORMAT="%TAG_NAME%-%COMMIT_SHA%-Re-TG@qdykernel"' >> ./common/arch/arm64/configs/gki_defconfig
           
           if [ "${{ env.ENABLE_SUSFS }}" == 'true' ];then
@@ -634,6 +642,8 @@ jobs:
           sudo sed -i 's/^SUBLEVEL = 118/SUBLEVEL = 89/' ./common/Makefile
           sudo sed -i 's/^filechk_utsrelease = .*/filechk_utsrelease = 6.6.89-android15-8-g7e1f3c083cc6-abogki467167594-4k/' ./common/Makefile || true
           grep -n '^SUBLEVEL\|^filechk_utsrelease' ./common/Makefile || true
+          echo CONFIG_LOCALVERSION="-android15-8-g7e1f3c083cc6-abogki467167594-4k" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "[OK] Kernel version spoofed to 6.6.89 with consistent localversion"
           echo "KBUILD_BUILD_USER=kleaf" >> $GITHUB_ENV
           echo "KBUILD_BUILD_HOST=build-host" >> $GITHUB_ENV
       - name: 📥 Start build timer (构建计时开始)
