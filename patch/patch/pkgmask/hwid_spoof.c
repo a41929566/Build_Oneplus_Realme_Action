@@ -10,7 +10,7 @@
  *
  *     /sys/devices/soc0/serial_number     Qualcomm SoC serial
  *     /proc/cpuinfo                       "Serial:" line
- *     /sys/block/*/device/cid             eMMC/UFS CID
+ *     /sys/block/<block>/device/cid       eMMC/UFS CID
  *     /sys/class/net/<iface>/address      MAC reported to userspace
  *
  *   Detectors (e.g. Maple) read these with plain open()+read() and cross
