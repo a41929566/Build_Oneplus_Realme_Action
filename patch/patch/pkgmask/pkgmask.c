@@ -63,6 +63,8 @@
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 
+#include "hwid_spoof.h"
+
 extern int close_fd(unsigned int fd);
 
 #define PM_LOG_PREFIX "pkgmask: "
@@ -757,12 +759,17 @@ static int __init pkgmask_init(void)
 	if (ret)
 		pr_info(PM_LOG_PREFIX "initial perm/getattr hooks skipped (%d)\n", ret);
 
+	/* read-only hardware ID spoof (soc serial / cpuinfo / cid / mac).
+	 * Non-fatal: if its probe cannot register it simply stays idle. */
+	hwid_spoof_init();
+
 	pr_info(PM_LOG_PREFIX "v4.9 built-in initialized (nothing hidden until configured)\n");
 	return 0;
 }
 
 static void __exit pkgmask_exit(void)
 {
+	hwid_spoof_exit();
 	reset_state();
 	pr_info(PM_LOG_PREFIX "unloaded\n");
 }
