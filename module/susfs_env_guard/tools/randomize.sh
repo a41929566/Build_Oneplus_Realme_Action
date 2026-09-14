@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# SUSFS环境守护 v6.2 - 硬件ID状态管理
+# SUSFS环境守护 v6.3 - 硬件ID状态管理
 # 分两层：
 #   A) 用户态可改：Settings.Secure android_id
 #   B) 只读硬件ID（SoC serial / cpuinfo / UFS CID / 网卡MAC）：只能靠内核 hwid_spoof
@@ -11,9 +11,54 @@
 . "${0%/*}/lib_common.sh"
 
 HW_DIR="$HWID_SYSFS"
-AID_BACKUP="$BACKUP_DIR/android_id.txt"
+AID_USER=0
+AID_BACKUP="$BACKUP_DIR/android_id.user${AID_USER}.txt"
+STATE_FILE="$DATA_DIR/identity_state"
 
-hwid_supported() { [ -f "$HW_DIR/hwid_enabled" ] && [ -f "$HW_DIR/hwid_reload" ]; }
+hwid_supported() {
+    [ -f "$HW_DIR/hwid_enabled" ] &&
+    [ -f "$HW_DIR/hwid_reload" ] &&
+    [ -r "$HW_DIR/hwid_status" ]
+}
+write_node() {
+    local node=$1 value=$2
+    [ -w "$HW_DIR/$node" ] || return 1
+    printf '%s\n' "$value" > "$HW_DIR/$node" 2>/dev/null
+}
+aid_read() {
+    settings --user "$AID_USER" get secure android_id 2>/dev/null |
+        tr -d '\r\n'
+}
+aid_valid() {
+    case "$1" in
+        ''|null|NULL|unknown|Unknown) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+backup_android_id() {
+    local current
+    [ -s "$AID_BACKUP" ] && return 0
+    current=$(aid_read)
+    aid_valid "$current" || return 1
+    printf '%s\n' "$current" > "$AID_BACKUP"
+}
+apply_android_id() {
+    local i current
+    backup_android_id || {
+        log 1 "android_id backup deferred: settings service is not ready"
+        return 2
+    }
+    i=0
+    while [ "$i" -lt 5 ]; do
+        settings --user "$AID_USER" put secure android_id "$fake_aid" 2>/dev/null
+        current=$(aid_read)
+        [ "$current" = "$fake_aid" ] && return 0
+        i=$((i+1))
+        sleep 1
+    done
+    log 0 "android_id verification failed: expected=$fake_aid actual=$current"
+    return 1
+}
 
 # 保证 profile 全套键齐全（杜绝空值写入内核：空 SoC/CID/MAC = 明显异常）
 # 无论本脚本与 props_spoof 的调用先后，都能自洽补全。
@@ -37,31 +82,52 @@ apply_kernel_hwid() {
     local uids
     uids=$(get_config hwid_uids "")
     # 作用域：默认全局（空）。可在 conf 配 hwid_uids=10123,10124 仅对特定 app
-    echo "$uids" > "$HW_DIR/hwid_uids" 2>/dev/null
-    echo "$fake_soc"  > "$HW_DIR/hwid_soc_serial" 2>/dev/null
-    echo "$fake_cid"  > "$HW_DIR/hwid_cid" 2>/dev/null
-    echo "$fake_wmac" > "$HW_DIR/hwid_wlan_mac" 2>/dev/null
-    echo "$fake_bmac" > "$HW_DIR/hwid_bt_mac" 2>/dev/null
-    echo "$fake_cpu"  > "$HW_DIR/hwid_cpu_serial" 2>/dev/null
-    echo 1 > "$HW_DIR/hwid_reload" 2>/dev/null
-    echo 1 > "$HW_DIR/hwid_enabled" 2>/dev/null
-    bool_on "$(cat "$HW_DIR/hwid_enabled" 2>/dev/null)"
+    write_node hwid_uids "$uids" || return 1
+    write_node hwid_soc_serial "$fake_soc" || return 1
+    write_node hwid_cid "$fake_cid" || return 1
+    write_node hwid_wlan_mac "$fake_wmac" || return 1
+    write_node hwid_bt_mac "$fake_bmac" || return 1
+    write_node hwid_cpu_serial "$fake_cpu" || return 1
+    write_node hwid_reload 1 || return 1
+    write_node hwid_enabled 1 || return 1
+    bool_on "$(cat "$HW_DIR/hwid_enabled" 2>/dev/null)" || return 1
+    local status
+    status=$(cat "$HW_DIR/hwid_status" 2>/dev/null)
+    printf '%s\n' "$status" | grep -q 'hook_active=1' || {
+        log 0 "hwid hook is not active after configuration"
+        return 1
+    }
+    printf '%s\n' "$status" | grep -q "^soc_serial=$fake_soc$" || return 1
+    printf '%s\n' "$status" | grep -q "^cid=$fake_cid$" || return 1
+    printf '%s\n' "$status" | grep -q "^wlan_mac=$fake_wmac$" || return 1
+    printf '%s\n' "$status" | grep -q "^bt_mac=$fake_bmac$" || return 1
+    printf '%s\n' "$status" | grep -q "^cpu_serial=$fake_cpu$" || return 1
+    return 0
 }
 
 do_apply() {
+    init_feature_flags
     ensure_profile; . "$PROFILE"
-    local on; on=$(get_config global_spoof_enabled 1)
+    local hw_on; hw_on=$(get_config spoof_hwid_enabled 0)
+    local aid_on; aid_on=$(get_config spoof_android_id 0)
 
-    # A) android_id（先备份真值一次）
-    if [ ! -f "$AID_BACKUP" ]; then
-        settings get secure android_id 2>/dev/null > "$AID_BACKUP"
-    fi
-    if [ "$on" = "1" ] && [ "$(get_config spoof_android_id 1)" = "1" ]; then
-        settings put secure android_id "$fake_aid" 2>/dev/null
+    printf '%s\n' applying > "$STATE_FILE"
+    # A) Android ID is only touched when Settings has a valid value.
+    local aid_rc=0
+    if [ "$aid_on" = "1" ]; then
+        apply_android_id || aid_rc=$?
+        [ "$aid_rc" = 1 ] && {
+            printf '%s\n' rolled-back > "$STATE_FILE"
+            do_restore
+            printf '%s\n' rolled-back > "$STATE_FILE"
+            return 1
+        }
+    else
+        restore_android_id
     fi
 
     # B) 内核只读 ID（优先内核 hwid_spoof；不支持时回退到用户态 bind mount）
-    if [ "$on" = "1" ]; then
+    if [ "$hw_on" = "1" ]; then
         if apply_kernel_hwid; then
             log 2 "kernel hwid applied soc=$fake_soc wmac=$fake_wmac"
             echo "KERNEL_HWID=OK"
@@ -70,12 +136,25 @@ do_apply() {
         elif [ "$(get_config hwid_userspace_fallback 0)" = "1" ]; then
             log 0 "内核无 hwid_spoof；拒绝使用会改动网卡状态的用户态回退"
             echo "KERNEL_HWID=DISABLED_UNSAFE_FALLBACK"
+            do_restore
+            printf '%s\n' rolled-back > "$STATE_FILE"
+            return 1
         else
             log 1 "内核无 hwid_spoof 且 userspace fallback 已禁用，硬件ID未伪装"
             echo "KERNEL_HWID=DISABLED"
+            do_restore
+            printf '%s\n' rolled-back > "$STATE_FILE"
+            return 1
         fi
     else
-        do_restore
+        restore_kernel_hwid
+    fi
+    if [ "$aid_rc" = 2 ]; then
+        printf '%s\n' pending > "$STATE_FILE"
+    elif [ "$aid_on" != "1" ] && [ "$hw_on" != "1" ]; then
+        printf '%s\n' restored > "$STATE_FILE"
+    else
+        printf '%s\n' applied > "$STATE_FILE"
     fi
 }
 
@@ -86,19 +165,23 @@ do_regen() {
     do_apply
 }
 
-do_restore() {
-    # 关闭内核拦截 -> app 重新读到真值（该漏就漏）
+restore_kernel_hwid() {
     if hwid_supported; then
         echo 0 > "$HW_DIR/hwid_enabled" 2>/dev/null
     fi
-    # 卸载用户态 bind mount（如有）
-    sh "$MODDIR/tools/hwid_userspace.sh" umount 2>/dev/null
     rm -f "$DATA_DIR/hwid_method_kernel" "$DATA_DIR/hwid_method_userspace"
-    # android_id 还原
+}
+restore_android_id() {
+    sh "$MODDIR/tools/hwid_userspace.sh" umount 2>/dev/null
     if [ -f "$AID_BACKUP" ]; then
         local orig; orig=$(cat "$AID_BACKUP")
-        [ -n "$orig" ] && settings put secure android_id "$orig" 2>/dev/null
+        aid_valid "$orig" && settings --user "$AID_USER" put secure android_id "$orig" 2>/dev/null
     fi
+}
+do_restore() {
+    restore_kernel_hwid
+    restore_android_id
+    printf '%s\n' restored > "$STATE_FILE"
     log 2 "hardware id restore: hwid disabled, android_id restored"
 }
 
@@ -135,7 +218,7 @@ do_status() {
     echo "  \"kernel_supported\": \"$sup\","
     echo "  \"enabled\": \"$en\","
     echo "  \"fake_aid\": \"$fake_aid\","
-    echo "  \"cur_aid\": \"$(settings get secure android_id 2>/dev/null)\","
+    echo "  \"cur_aid\": \"$(aid_read)\","
     echo "  \"fake_soc\": \"$fake_soc\","
     echo "  \"drv_soc\": \"$drv_soc\","
     echo "  \"fake_cid\": \"$fake_cid\","

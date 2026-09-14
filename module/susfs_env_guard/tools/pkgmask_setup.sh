@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# SUSFS环境守护 v6.2 - pkgmask 真 sysfs 配置
+# SUSFS环境守护 v6.3 - pkgmask 真 sysfs 配置
 # 驱动真实接口（pkgmask v4.9，built-in，CONFIG_PKGMASK=y）：
 #   deny_uids(逗号分隔)  scope_mode=deny  target_paths(逗号分隔)
 #   hide_dirents/hook_getdents/hook_perm/hook_getattr=1

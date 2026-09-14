@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# SUSFS环境守护 v6.2 - 自检诊断（POSIX sh / mksh 兼容，禁止 declare -A）
+# SUSFS环境守护 v6.3 - 自检诊断（POSIX sh / mksh 兼容，禁止 declare -A）
 # 用法: selfcheck.sh  （输出文本 + 写 selfcheck_result.json）
 
 . "${0%/*}/lib_common.sh"
@@ -10,7 +10,7 @@ wn(){ WARN=$((WARN+1)); echo "[WARN] $*"; }
 no(){ FAIL=$((FAIL+1)); echo "[FAIL] $*"; }
 ps_(){ PASS=$((PASS+1)); echo "[PASS] $*"; }
 
-echo "===== SUSFS环境守护 v6.2 自检 $(date) ====="
+echo "===== SUSFS环境守护 v6.3 自检 $(date) ====="
 
 # 1. 文件完整性
 echo "--- 文件完整性 ---"
@@ -23,8 +23,15 @@ done
 
 # 2. 属性伪装
 echo "--- 属性伪装 ---"
-G=$(get_config global_spoof_enabled 1)
-if [ "$G" = 1 ]; then
+init_feature_flags
+G=$(get_config global_spoof_enabled 0)
+PROPS_ON=$(get_config spoof_props_enabled 0)
+HWID_ON=$(get_config spoof_hwid_enabled 0)
+if [ "$PROPS_ON" = 1 ] || [ "$HWID_ON" = 1 ] ||
+   [ "$(get_config spoof_android_id 0)" = 1 ]; then
+    G=1
+fi
+if [ "$PROPS_ON" = 1 ]; then
     # prop:expected 列表（POSIX 替代关联数组）
     echo "ro.boot.verifiedbootstate:green
 ro.boot.vbmeta.device_state:locked
@@ -57,27 +64,54 @@ ro.build.type:user" | while IFS=: read -r p e; do
     echo "$FP" | grep -q "/$INC:" && ps_ "fingerprint 与 incremental 一致($INC)" \
         || no "fingerprint 与 incremental 不一致 INC=$INC"
 else
-    wn "全局伪装关闭中(显示真值属预期)"
+    wn "属性伪装未启用（显示真值属预期）"
 fi
 
 # 3. 硬件只读 ID（内核 hwid_spoof）
 echo "--- 硬件只读ID ---"
 if [ -f "$HWID_SYSFS/hwid_enabled" ]; then
     HE=$(cat "$HWID_SYSFS/hwid_enabled" 2>/dev/null)
-    if [ "$G" = 1 ] && bool_on "$HE"; then
+    if [ "$HWID_ON" = 1 ] && bool_on "$HE"; then
         # 假值是否真正进入驱动
         HS=$(cat "$HWID_SYSFS/hwid_status" 2>/dev/null)
-        echo "$HS" | grep -q '^hook=vfs_read(kretprobe)' && ps_ "内核 hwid hook 已注册" || no "hwid hook 未注册"
+        echo "$HS" | grep -q 'hook_active=1' && ps_ "内核 hwid hook 已注册" || no "hwid hook 未注册（kretprobe 不可用或未链接）"
         echo "$HS" | grep -q '^wlan_mac=..' && ps_ "内核 hwid 已加载假MAC" || no "hwid 假值未就位"
         . "$DATA_DIR/fake_profile.conf" 2>/dev/null
-        ACTUAL_WMAC=$(cat /sys/class/net/wlan0/address 2>/dev/null)
-        [ "$ACTUAL_WMAC" = "$fake_wmac" ] && ps_ "WLAN MAC 读取已替换" \
-            || wn "WLAN MAC 读取未匹配（不修改真实网卡状态，当前=$ACTUAL_WMAC）"
+        HWID_SCOPE=$(get_config hwid_uids "")
+        if [ -n "$HWID_SCOPE" ]; then
+            wn "hwid_uids 已限定为 [$HWID_SCOPE]；root 自检读取不代表目标应用视角"
+        fi
+        ACTUAL_WMAC=""
+        for f in /sys/class/net/wlan*/address /sys/class/net/wlp*/address /sys/class/net/eth*/address; do
+            [ -r "$f" ] && { ACTUAL_WMAC=$(cat "$f" 2>/dev/null); break; }
+        done
+        if [ -n "$HWID_SCOPE" ]; then
+            wn "跳过 root WLAN MAC 命中判断（需用目标 UID 验证）"
+        elif [ "$ACTUAL_WMAC" = "$fake_wmac" ]; then
+            ps_ "WLAN MAC 读取已替换"
+        else
+            wn "WLAN MAC 读取未匹配（内核 hook 或节点路径未覆盖，当前=${ACTUAL_WMAC:-N/A}）"
+        fi
+        ACTUAL_BMAC=""
+        for f in /sys/class/bluetooth/hci*/address; do
+            [ -r "$f" ] && { ACTUAL_BMAC=$(cat "$f" 2>/dev/null); break; }
+        done
+        if [ -n "$HWID_SCOPE" ]; then
+            wn "跳过 root Bluetooth MAC 命中判断（需用目标 UID 验证）"
+        elif [ -n "$ACTUAL_BMAC" ] && [ "$ACTUAL_BMAC" = "$fake_bmac" ]; then
+            ps_ "Bluetooth MAC 读取已替换"
+        else
+            wn "Bluetooth MAC 读取未匹配（当前=${ACTUAL_BMAC:-N/A}）"
+        fi
         ACTUAL_SOC=$(cat /sys/devices/soc0/serial_number 2>/dev/null)
-        case "$ACTUAL_SOC" in
-            "$fake_soc"*) ps_ "SoC Serial 实际读取已替换" ;;
-            *) wn "SoC Serial 实际读取未匹配(当前=$ACTUAL_SOC)" ;;
-        esac
+        if [ -n "$HWID_SCOPE" ]; then
+            wn "跳过 root SoC Serial 命中判断（需用目标 UID 验证）"
+        else
+            case "$ACTUAL_SOC" in
+                "$fake_soc"*) ps_ "SoC Serial 实际读取已替换" ;;
+                *) wn "SoC Serial 实际读取未匹配(当前=$ACTUAL_SOC)" ;;
+            esac
+        fi
     else
         wn "hwid_spoof 未使能(enabled=$HE；可接受值为 1/Y)"
     fi
@@ -110,7 +144,7 @@ if ls -ld "$SUSFS_DIR" >/dev/null 2>&1; then
         wn "SUSFS version 节点不存在（可能已启用隐藏版本信息）"
     fi
 else
-    wn "未检测到 SUSFS（路径隐藏依赖它）"
+    wn "SUSFS 节点不可见（可能为内置或隐藏；不能仅凭 /sys/module 判定）"
 fi
 
 # 6. 守护进程

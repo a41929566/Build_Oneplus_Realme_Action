@@ -1,10 +1,12 @@
-# SUSFS环境守护 v6.2 配置（刷机后自动复制为 spoof.conf，之后升级不覆盖）
+# SUSFS环境守护 v6.3 配置（刷机后自动复制为 spoof.conf，之后升级不覆盖）
 
-# 全局伪装总开关 1=开 0=关（关闭后属性/硬件ID立即回落真值，该漏就漏）
-global_spoof_enabled=1
+# 兼容旧版本的总开关；v6.3 WebUI 使用下面的逐项开关
+global_spoof_enabled=0
 
 # 单项开关
-spoof_android_id=1
+spoof_props_enabled=0
+spoof_hwid_enabled=0
+spoof_android_id=0
 spoof_serial=1
 spoof_build=1
 spoof_wifi_mac=1

@@ -1,10 +1,10 @@
 #!/system/bin/sh
-# SUSFS环境守护 v6.2 - customize.sh（标准 KSU/ReSukiSU/Magisk/APatch 模块安装）
+# SUSFS环境守护 v6.3 - customize.sh（标准 KSU/ReSukiSU/Magisk/APatch 模块安装）
 SKIPUNZIP=1
 MODID="susfs_env_guard"
 
 ui_print "=========================================="
-ui_print "  SUSFS环境守护 v6.2"
+ui_print "  SUSFS环境守护 v6.3"
 ui_print "  属性全通道一致 + 内核硬件ID + pkgmask"
 ui_print "=========================================="
 

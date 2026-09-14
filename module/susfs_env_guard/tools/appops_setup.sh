@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# SUSFS环境守护 v6.2 - AppOps：管理检测方的查询应用列表权限
+# SUSFS环境守护 v6.3 - AppOps：管理检测方的查询应用列表权限
 # Maple 等的“三方环境检测”走 PM/Binder(getInstalledPackages)，readdir/SUSFS 挡不住；
 # 撤销 QUERY_ALL_PACKAGES 后，系统只返回带 <queries> 可见的有限包，MT 等不可见。
 #

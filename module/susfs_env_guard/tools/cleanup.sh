@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# SUSFS环境守护 v6.2 - 临时文件清理（不删除活动配置和系统日志）
+# SUSFS环境守护 v6.3 - 临时文件清理（不删除活动配置和系统日志）
 . "${0%/*}/lib_common.sh"
 
 # 1) /data/local/tmp 下本模块的临时文件

@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# SUSFS环境守护 v6.2 - service.sh（late_start service 阶段）
+# SUSFS环境守护 v6.3 - service.sh（late_start service 阶段）
 # 注意：ro.* 属性伪装已全部前移到 post-fs-data.sh，这里不再 resetprop，
 #       避免 zygote 已固化真值后再改导致 JVM/getprop 三通道不一致。
 MODDIR=${0%/*}
@@ -7,6 +7,7 @@ MODDIR=${0%/*}
 
 mkdir -p "$DATA_DIR" "$BACKUP_DIR" "$DATA_DIR/logs" "$RUN_DIR"
 [ -f "$CONF" ] || cp -f "$MODDIR/config/spoof.conf.example" "$CONF"
+init_feature_flags
 
 echo "=== service.sh start $(date) ===" > "$RUN_DIR/service.log"
 

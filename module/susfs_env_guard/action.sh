@@ -2,7 +2,7 @@
 # 管理器“执行”入口：重新应用全部规则并打印自检
 MODDIR=${0%/*}
 . "$MODDIR/tools/lib_common.sh"
-echo "================ SUSFS环境守护 v6.2 ================"
+echo "================ SUSFS环境守护 v6.3 ================"
 sh "$MODDIR/tools/props_spoof.sh" apply
 sh "$MODDIR/tools/randomize.sh" apply
 sh "$MODDIR/tools/pkgmask_setup.sh" apply

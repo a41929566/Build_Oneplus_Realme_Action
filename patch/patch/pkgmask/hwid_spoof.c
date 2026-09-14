@@ -93,7 +93,9 @@ enum hwid_kind {
 	KIND_CPUINFO,
 };
 
-static bool hwid_enabled = true;
+/* Configuration is applied explicitly by the module; never spoof at boot
+ * before the per-feature userspace policy has been evaluated. */
+static bool hwid_enabled;
 module_param(hwid_enabled, bool, 0600);
 MODULE_PARM_DESC(hwid_enabled, "Master switch for read-only hardware ID spoof");
 
@@ -411,6 +413,21 @@ static const char *dname(struct dentry *d)
 	return d ? (const char *)d->d_name.name : NULL;
 }
 
+static bool hwid_is_bt_iface(const char *name)
+{
+	return name && (!strncmp(name, "hci", 3) ||
+			!strcmp(name, "bt-ipv6"));
+}
+
+static bool hwid_is_wifi_iface(const char *name)
+{
+	if (!name)
+		return false;
+	return !strncmp(name, "wlan", 4) || !strncmp(name, "wlp", 3) ||
+	       !strncmp(name, "wifi", 4) || !strncmp(name, "swlan", 5) ||
+	       !strncmp(name, "p2p", 3) || !strncmp(name, "eth", 3);
+}
+
 static enum hwid_kind classify(struct file *file)
 {
 	struct dentry *d = file->f_path.dentry;
@@ -446,10 +463,9 @@ static enum hwid_kind classify(struct file *file)
 		return KIND_CID;
 
 	if (strcmp(name, "address") == 0 && pname) {
-		if (!strncmp(pname, "hci", 3) || !strcmp(pname, "bt-ipv6"))
+		if (hwid_is_bt_iface(pname))
 			return KIND_BT_MAC;
-		if (!strncmp(pname, "wlan", 4) || !strncmp(pname, "eth", 3) ||
-		    !strncmp(pname, "wlp", 3)) {
+		if (hwid_is_wifi_iface(pname)) {
 			if (strcmp(pname, "lo") && strncmp(pname, "rmnet", 5) &&
 			    strncmp(pname, "dummy", 5) && strncmp(pname, "sit", 3))
 				return KIND_WLAN_MAC;
@@ -464,6 +480,7 @@ struct hwid_hit {
 };
 
 static struct kretprobe vfs_read_kp;
+static bool hwid_hook_active;
 
 static int hwid_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
@@ -577,10 +594,10 @@ static int hwid_status_get(char *buffer, const struct kernel_param *kp)
 {
 	return scnprintf(buffer, PAGE_SIZE,
 		"hwid_spoof v1.0\n"
-		"enabled=%d scope_uids=%u\n"
+		"enabled=%d hook_active=%d scope_uids=%u\n"
 		"soc_serial=%s\ncid=%s\nwlan_mac=%s\nbt_mac=%s\n"
 		"cpu_serial=%s\nhook=vfs_read(kretprobe)\n",
-		hwid_enabled ? 1 : 0, hwid_uid_count,
+		hwid_enabled ? 1 : 0, hwid_hook_active ? 1 : 0, hwid_uid_count,
 		fixed_soc, fixed_cid, fixed_wmac, fixed_bmac, fixed_cpuser);
 }
 
@@ -626,8 +643,10 @@ int hwid_spoof_init(void)
 		pr_info(HW_LOG_PREFIX "vfs_read probe unavailable (%d); "
 			"HW ID spoof inactive, system unaffected\n", ret);
 		memset(&vfs_read_kp, 0, sizeof(vfs_read_kp));
+		hwid_hook_active = false;
 		return 0;
 	}
+	hwid_hook_active = true;
 
 	pr_info(HW_LOG_PREFIX "v1.0 active (soc/cid/cpuinfo/mac), "
 		"wlan=%s bt=%s\n", fixed_wmac, fixed_bmac);
@@ -638,6 +657,7 @@ void hwid_spoof_exit(void)
 {
 	if (vfs_read_kp.kp.symbol_name)
 		unregister_kretprobe(&vfs_read_kp);
+	hwid_hook_active = false;
 	memset(&vfs_read_kp, 0, sizeof(vfs_read_kp));
 }
 

@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# SUSFS环境守护 v6.2 - 硬件ID用户态回退层
+# SUSFS环境守护 v6.3 - 硬件ID用户态回退层
 # 当内核没有 hwid_spoof 驱动时，可选择使用 bind mount 回退层
 # 在用户态实现 SoC serial / UFS CID / MAC 的全局伪装。
 #

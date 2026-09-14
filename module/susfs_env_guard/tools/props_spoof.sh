@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# SUSFS环境守护 v6.2 - 属性层状态管理
+# SUSFS环境守护 v6.3 - 属性层状态管理
 # 设计原则（对抗 Maple 多通道交叉比对 JVM vs getprop vs PropertyUtil）：
 #   1) 必须在 post-fs-data（zygote 启动前）执行，使 app fork 时 JVM 固化值即为假值；
 #   2) 假指纹一次生成、持久保存，重启不变（频繁变更本身就是异常特征）；
@@ -118,9 +118,10 @@ fp_replace_inc() {
 
 # ---------- apply ----------
 do_apply() {
+    init_feature_flags
     backup_orig
     load_profile
-    local on; on=$(get_config global_spoof_enabled 1)
+    local on; on=$(get_config spoof_props_enabled 0)
     [ "$on" != "1" ] && { do_restore; return; }
 
     # L0 锁状态
@@ -128,32 +129,35 @@ do_apply() {
         [ -n "$p" ] && rp_set "$p" "$v"
     done
 
-    # L1 个体唯一值
-    rp_set ro.serialno "$fake_serial"
-    rp_set ro.boot.serialno "$fake_serial"
-    # 一加/oppo 序列号镜像属性
-    rp_set ro.boot.serialno "$fake_serial"
-    rp_set persist.sys.oem.serialno "$fake_serial" 2>/dev/null
-    rp_set ro.build.version.incremental "$fake_inc"
-
-    # fingerprint：以真实值为底，仅替换 incremental，保证结构/机型/版本自洽
-    for p in $FP_PROPS; do
-        real=$(orig_val "$p"); [ -z "$real" ] && real=$(getprop "$p")
-        [ -z "$real" ] && continue
-        newfp=$(fp_replace_inc "$real" "$fake_inc")
-        [ -n "$newfp" ] && rp_set "$p" "$newfp"
-    done
-    # display.id 保留真机前缀，仅替换尾部增量（很多检测比对它与 fingerprint）
-    local disp; disp=$(orig_val ro.build.display.id)
-    [ -n "$disp" ] && rp_set ro.build.display.id "$(echo "$disp" | sed "s/[0-9]\{6,\}$/$fake_inc/")"
+    # L1 个体唯一值；每个表面均由独立开关控制。
+    if [ "$(get_config spoof_serial 1)" = "1" ]; then
+        rp_set ro.serialno "$fake_serial"
+        rp_set ro.boot.serialno "$fake_serial"
+        rp_set persist.sys.oem.serialno "$fake_serial" 2>/dev/null
+    fi
+    if [ "$(get_config spoof_build 1)" = "1" ]; then
+        rp_set ro.build.version.incremental "$fake_inc"
+        for p in $FP_PROPS; do
+            real=$(orig_val "$p"); [ -z "$real" ] && real=$(getprop "$p")
+            [ -z "$real" ] && continue
+            newfp=$(fp_replace_inc "$real" "$fake_inc")
+            [ -n "$newfp" ] && rp_set "$p" "$newfp"
+        done
+        local disp; disp=$(orig_val ro.build.display.id)
+        [ -n "$disp" ] && rp_set ro.build.display.id "$(echo "$disp" | sed "s/[0-9]\{6,\}$/$fake_inc/")"
+    fi
 
     # 一加专属 MAC/唯一码属性（与内核 hwid 假 MAC 对齐，避免属性与 sysfs 不一致）
-    rp_set ro.com.cph.mac_address "$fake_wmac" 2>/dev/null
-    rp_set vendor.cf.address "$fake_wmac" 2>/dev/null
-    rp_set com.cph.bluetooth_mac "$fake_bmac" 2>/dev/null
-    rp_set ro.com.cph.device_unique_mac "$fake_wmac" 2>/dev/null
-    rp_set persist.vendor.wifi.mac "$fake_wmac" 2>/dev/null
-    rp_set persist.vendor.bt.mac "$fake_bmac" 2>/dev/null
+    if [ "$(get_config spoof_wifi_mac 1)" = "1" ]; then
+        rp_set ro.com.cph.mac_address "$fake_wmac" 2>/dev/null
+        rp_set vendor.cf.address "$fake_wmac" 2>/dev/null
+        rp_set ro.com.cph.device_unique_mac "$fake_wmac" 2>/dev/null
+        rp_set persist.vendor.wifi.mac "$fake_wmac" 2>/dev/null
+    fi
+    if [ "$(get_config spoof_bt_mac 1)" = "1" ]; then
+        rp_set com.cph.bluetooth_mac "$fake_bmac" 2>/dev/null
+        rp_set persist.vendor.bt.mac "$fake_bmac" 2>/dev/null
+    fi
     # 主机名（默认常含机型，统一中性）
     rp_set net.hostname "localhost" 2>/dev/null
 
@@ -185,7 +189,7 @@ do_restore() {
 do_status() {
     load_profile 2>/dev/null
     echo "{"
-    echo "  \"enabled\": \"$(get_config global_spoof_enabled 1)\","
+    echo "  \"enabled\": \"$(get_config spoof_props_enabled 0)\","
     echo "  \"fake_serial\": \"$fake_serial\","
     echo "  \"cur_serial\": \"$(getprop ro.serialno)\","
     echo "  \"orig_serial\": \"$(orig_val ro.serialno)\","

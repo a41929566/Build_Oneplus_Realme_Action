@@ -1,5 +1,5 @@
 #!/system/bin/sh
-# SUSFS环境守护 v6.2 - 公共函数库（被各脚本 source，不单独执行）
+# SUSFS环境守护 v6.3 - 公共函数库（被各脚本 source，不单独执行）
 # 兼容 mksh / ash / busybox sh，禁止使用 bash 关联数组等非 POSIX 特性
 
 MODID="susfs_env_guard"
@@ -11,10 +11,17 @@ PROFILE="${DATA_DIR}/fake_profile.conf"
 RUN_DIR="${MODDIR}/run"
 ACTION_FILE="${DATA_DIR}/action.txt"
 PKG_SYSFS="/sys/module/pkgmask/parameters"
-HWID_SYSFS="/sys/module/hwid_spoof/parameters"
-[ -d "$HWID_SYSFS" ] || HWID_SYSFS="$PKG_SYSFS"
+# hwid_spoof is built into pkgmask by this repository. Only select a
+# standalone directory when it exposes the complete control surface.
+HWID_SYSFS="$PKG_SYSFS"
+if [ -f "/sys/module/hwid_spoof/parameters/hwid_enabled" ] &&
+   [ -f "/sys/module/hwid_spoof/parameters/hwid_reload" ]; then
+    HWID_SYSFS="/sys/module/hwid_spoof/parameters"
+fi
 
 mkdir -p "$DATA_DIR" "$BACKUP_DIR" "$DATA_DIR/logs" "$RUN_DIR" 2>/dev/null
+[ -f "$CONF" ] || [ ! -f "$MODDIR/config/spoof.conf.example" ] ||
+    cp -f "$MODDIR/config/spoof.conf.example" "$CONF" 2>/dev/null
 
 bool_on() {
     case "$1" in
@@ -60,6 +67,22 @@ set_config() {
         sed -i "s|^${key}=.*|${key}=${val}|" "$CONF" 2>/dev/null
     else
         echo "${key}=${val}" >> "$CONF"
+    fi
+}
+
+init_feature_flags() {
+    local base
+    if ! grep -q '^feature_flags_initialized=' "$CONF" 2>/dev/null; then
+        # Legacy global enable must not silently turn on every new feature.
+        # New installs and migrated installs both start in explicit opt-in mode.
+        base=0
+        grep -q '^spoof_props_enabled=' "$CONF" 2>/dev/null ||
+            echo "spoof_props_enabled=$base" >> "$CONF"
+        grep -q '^spoof_hwid_enabled=' "$CONF" 2>/dev/null ||
+            echo "spoof_hwid_enabled=$base" >> "$CONF"
+        grep -q '^spoof_android_id=' "$CONF" 2>/dev/null ||
+            echo "spoof_android_id=$base" >> "$CONF"
+        echo "feature_flags_initialized=1" >> "$CONF"
     fi
 }
 

@@ -86,14 +86,12 @@ label.chk .uid{font-size:11px;color:var(--dim);font-family:ui-monospace,monospac
 </head>
 <body>
 <div class="header">
-  <div><h1>SUSFS 环境守护</h1><div class="ver" id="ver">v6.2 · 内核接口方案</div></div>
+  <div><h1>SUSFS 环境守护</h1><div class="ver" id="ver">v6.3 · 内核接口方案</div></div>
   <div class="live"><span class="dot" id="liveDot"></span><span id="liveTxt">连接中</span></div>
 </div>
 
-<!-- 全局开关始终可见 -->
 <div class="bigswitch off" id="bigBar">
-  <div><div class="t" id="bigT">全局伪装</div><div class="s" id="bigS">关闭 · 显示真实值</div></div>
-  <label class="switch"><input type="checkbox" id="globalToggle"><span class="slider"></span></label>
+  <div><div class="t">逐项控制模式</div><div class="s">每个身份层单独启用和验证</div></div>
 </div>
 
 <div class="tabs">
@@ -120,8 +118,6 @@ label.chk .uid{font-size:11px;color:var(--dim);font-family:ui-monospace,monospac
   </div>
   <div class="card">
     <h3>快捷操作</h3>
-    <button class="btn primary" onclick="act('randomize_all')">一键随机全部指纹</button>
-    <button class="btn" onclick="act('restore_all')">一键还原真实值</button>
     <div class="btnrow">
       <button class="btn row2" onclick="act('selfcheck')">重新自检</button>
       <button class="btn row2" onclick="act('cleanup')">清理运行痕迹</button>
@@ -129,7 +125,7 @@ label.chk .uid{font-size:11px;color:var(--dim);font-family:ui-monospace,monospac
   </div>
   <div class="card">
     <h3>说明</h3>
-    <div class="hint">所有状态每 3 秒自动刷新；开关与按钮即时下发、即时反馈。关闭全局伪装后，属性与硬件 ID 立即回落真实值（该漏即漏），便于对照检测。</div>
+    <div class="hint">每个身份层独立控制；只有对应层的写入和读取验证成功后才显示为已生效。</div>
   </div>
 </div>
 
@@ -156,7 +152,10 @@ label.chk .uid{font-size:11px;color:var(--dim);font-family:ui-monospace,monospac
       <div><b>当前增量</b><span id="pc_inc" class="mono">-</span></div>
     </div>
   </div>
-  <button class="btn primary" onclick="act('randomize_all')">重新随机属性指纹</button>
+  <div class="btnrow">
+    <button class="btn row2 primary" onclick="act('props_on')">启用属性伪装</button>
+    <button class="btn row2" onclick="act('props_off')">暂停属性伪装</button>
+  </div>
 </div>
 
 <!-- ============ 硬件ID ============ -->
@@ -179,7 +178,10 @@ label.chk .uid{font-size:11px;color:var(--dim);font-family:ui-monospace,monospac
     <button class="btn row2 primary" onclick="act('hwid_on')">启用拦截</button>
     <button class="btn row2" onclick="act('hwid_off')">暂停拦截(漏真)</button>
   </div>
-  <button class="btn" onclick="act('randomize_all')">重新随机硬件 ID</button>
+  <div class="btnrow">
+    <button class="btn row2 primary" onclick="act('android_on')">启用 Android ID</button>
+    <button class="btn row2" onclick="act('android_off')">暂停 Android ID</button>
+  </div>
 </div>
 
 <!-- ============ 应用隐藏 pkgmask ============ -->
@@ -250,9 +252,6 @@ document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
   if(t.dataset.p==='mask') loadPackages();
 });
 
-/* ---------- 全局开关 ---------- */
-document.getElementById('globalToggle').onchange=e=>act(e.target.checked?'spoof_on':'spoof_off');
-
 /* ---------- 状态渲染 ---------- */
 function pill(ok,yes,no){return ok? '<span class="pill ok">'+yes+'</span>':'<span class="pill bad">'+(no||'否')+'</span>';}
 function set(id,txt,cls){const e=document.getElementById(id);if(e){e.textContent=txt;if(cls)e.className='v '+cls;}}
@@ -261,16 +260,15 @@ function eq(a,b){return a&&b&&a===b;}
 function render(){
   if(!S)return;
   const g=S.global==='1';
-  document.getElementById('globalToggle').checked=g;
   const bar=document.getElementById('bigBar');
   bar.classList.toggle('off',!g);
-  document.getElementById('bigT').textContent=g?'全局伪装已开启':'全局伪装已关闭';
-  document.getElementById('bigS').textContent=g?'全部伪装生效中':'关闭 · 显示真实值';
 
   // 总览
   if(S.selfcheck){sc('scPass',S.selfcheck.pass);sc('scWarn',S.selfcheck.warn);sc('scFail',S.selfcheck.fail);}
   if(S.kernel){set('ovKver',S.kernel.version||'-');set('ovKarch',S.kernel.arch||'-');}
-  set('ovSusfs',S.susfs&&S.susfs.version&&S.susfs.version!=='N/A'?S.susfs.version:'未检测',S.susfs&&S.susfs.version!=='N/A'?'ok':'bad');
+  const susfs=S.susfs||{};
+  const susfsKnown=susfs.state==='ready'||susfs.state==='present';
+  set('ovSusfs',susfsKnown?(susfs.version||'已加载'):'内置/隐藏',susfsKnown?'ok':'warn');
   const pm=S.pkgmask||{};
   set('ovPm',pm.supported==='1'?(pm.scope||'已加载'):'内核无pkgmask',pm.supported==='1'?'ok':'bad');
   const hw=S.hwid||{};
@@ -294,7 +292,8 @@ function render(){
   }
   // 硬件ID
   set('hwSupTag',hw.supported==='1'?'驱动已编译':'缺驱动');
-  set('hwEn',hw.supported!=='1'?'内核不支持':(hw.enabled==='1'?'拦截中':'已暂停'),hw.enabled==='1'?'ok':(hw.supported==='1'?'warn':'bad'));
+  const hookActive=hw.hook_active==='1';
+  set('hwEn',hw.supported!=='1'?'内核不支持':(hw.enabled==='1'?(hookActive?'拦截中':'参数已启用，hook未注册'):'已暂停'),hw.enabled==='1'&&hookActive?'ok':(hw.supported==='1'?'warn':'bad'));
   const row=(cur,fake)=>{
     if(!fake)return ['-','dim'];
     const ok=eq(cur,fake);
