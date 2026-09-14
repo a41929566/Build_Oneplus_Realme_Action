@@ -591,6 +591,7 @@ jobs:
           echo "CONFIG_KSU=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_KPM=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_PKGMASK=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_PKGMASK_HWID=y" >> ./common/arch/arm64/configs/gki_defconfig
           # pkgmask v4.9 的进程/包隐藏与 hwid_spoof 均由 CONFIG_PKGMASK=y 统一内置，
           # 不存在独立的 PKGMASK_HIDE_PROC/HIDE_PKG Kconfig（旧配置项无效，已移除）。
           # hwid_spoof 依赖 kretprobe，确保 KPROBES 相关项开启（GKI 默认已开，这里兜底）。
@@ -736,6 +737,7 @@ jobs:
           cd kernel_workspace/common
           test -f out/.config || { echo "FATAL: out/.config 缺失"; exit 1; }
           grep -Eq '^CONFIG_PKGMASK=y$' out/.config || { echo "FATAL: CONFIG_PKGMASK 未生效"; exit 1; }
+          grep -Eq '^CONFIG_PKGMASK_HWID=y$' out/.config || { echo "FATAL: CONFIG_PKGMASK_HWID 未生效"; exit 1; }
           grep -Eq '^CONFIG_KPROBES=y$' out/.config || { echo "FATAL: CONFIG_KPROBES 未生效"; exit 1; }
           grep -Eq '^CONFIG_KRETPROBES=y$' out/.config || { echo "FATAL: CONFIG_KRETPROBES 未生效"; exit 1; }
           test -f out/vmlinux || { echo "FATAL: out/vmlinux 缺失"; exit 1; }

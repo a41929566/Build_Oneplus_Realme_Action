@@ -75,7 +75,7 @@
 #include <linux/random.h>
 #include <linux/version.h>
 
-#ifdef CONFIG_ARM64
+#if defined(CONFIG_ARM64) && IS_ENABLED(CONFIG_PKGMASK_HWID)
 
 #define HW_LOG_PREFIX "hwid_spoof: "
 #define HWID_MAX_BYTES   16384
@@ -96,7 +96,13 @@ enum hwid_kind {
 /* Configuration is applied explicitly by the module; never spoof at boot
  * before the per-feature userspace policy has been evaluated. */
 static bool hwid_enabled;
-module_param(hwid_enabled, bool, 0600);
+static int hwid_enabled_set(const char *buf, const struct kernel_param *kp);
+static int hwid_enabled_get(char *buffer, const struct kernel_param *kp);
+static const struct kernel_param_ops hwid_enabled_ops = {
+	.set = hwid_enabled_set,
+	.get = hwid_enabled_get,
+};
+module_param_cb(hwid_enabled, &hwid_enabled_ops, NULL, 0600);
 MODULE_PARM_DESC(hwid_enabled, "Master switch for read-only hardware ID spoof");
 
 static char hwid_uids_buf[HWID_UID_LEN];
@@ -481,6 +487,33 @@ struct hwid_hit {
 
 static struct kretprobe vfs_read_kp;
 static bool hwid_hook_active;
+static int hwid_hook_register(void);
+static void hwid_hook_unregister(void);
+
+static int hwid_enabled_set(const char *buf, const struct kernel_param *kp)
+{
+	bool enable;
+	int ret;
+
+	ret = kstrtobool(buf, &enable);
+	if (ret)
+		return ret;
+	if (enable) {
+		ret = hwid_hook_register();
+		if (ret)
+			return ret;
+		hwid_enabled = true;
+	} else {
+		hwid_enabled = false;
+		hwid_hook_unregister();
+	}
+	return 0;
+}
+
+static int hwid_enabled_get(char *buffer, const struct kernel_param *kp)
+{
+	return scnprintf(buffer, PAGE_SIZE, "%d\n", hwid_enabled ? 1 : 0);
+}
 
 static int hwid_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
@@ -620,45 +653,54 @@ static struct kernel_param_ops hwid_reload_ops = {
 };
 module_param_cb(hwid_reload, &hwid_reload_ops, NULL, 0600);
 
-int hwid_spoof_init(void)
+static int hwid_hook_register(void)
 {
 	int ret;
 
-	memset(fixed_soc, 0, sizeof(fixed_soc));
-	memset(fixed_cid, 0, sizeof(fixed_cid));
-	memset(fixed_wmac, 0, sizeof(fixed_wmac));
-	memset(fixed_bmac, 0, sizeof(fixed_bmac));
-	memset(fixed_cpuser, 0, sizeof(fixed_cpuser));
-	hwid_refresh_fixed();
-
+	if (hwid_hook_active)
+		return 0;
 	memset(&vfs_read_kp, 0, sizeof(vfs_read_kp));
 	vfs_read_kp.kp.symbol_name = "vfs_read";
 	vfs_read_kp.handler = hwid_handler;
 	vfs_read_kp.entry_handler = hwid_entry;
 	vfs_read_kp.data_size = sizeof(struct hwid_hit);
 	vfs_read_kp.maxactive = 256;
-
 	ret = register_kretprobe(&vfs_read_kp);
 	if (ret < 0) {
-		pr_info(HW_LOG_PREFIX "vfs_read probe unavailable (%d); "
-			"HW ID spoof inactive, system unaffected\n", ret);
+		pr_info(HW_LOG_PREFIX "vfs_read probe unavailable (%d)\n", ret);
 		memset(&vfs_read_kp, 0, sizeof(vfs_read_kp));
-		hwid_hook_active = false;
-		return 0;
+		return ret;
 	}
 	hwid_hook_active = true;
+	return 0;
+}
 
-	pr_info(HW_LOG_PREFIX "v1.0 active (soc/cid/cpuinfo/mac), "
-		"wlan=%s bt=%s\n", fixed_wmac, fixed_bmac);
+static void hwid_hook_unregister(void)
+{
+	if (hwid_hook_active)
+		unregister_kretprobe(&vfs_read_kp);
+	hwid_hook_active = false;
+	memset(&vfs_read_kp, 0, sizeof(vfs_read_kp));
+}
+
+int hwid_spoof_init(void)
+{
+	memset(fixed_soc, 0, sizeof(fixed_soc));
+	memset(fixed_cid, 0, sizeof(fixed_cid));
+	memset(fixed_wmac, 0, sizeof(fixed_wmac));
+	memset(fixed_bmac, 0, sizeof(fixed_bmac));
+	memset(fixed_cpuser, 0, sizeof(fixed_cpuser));
+	hwid_refresh_fixed();
+	hwid_enabled = false;
+	hwid_hook_active = false;
+	pr_info(HW_LOG_PREFIX "initialized; hook is opt-in\n");
 	return 0;
 }
 
 void hwid_spoof_exit(void)
 {
-	if (vfs_read_kp.kp.symbol_name)
-		unregister_kretprobe(&vfs_read_kp);
-	hwid_hook_active = false;
-	memset(&vfs_read_kp, 0, sizeof(vfs_read_kp));
+	hwid_enabled = false;
+	hwid_hook_unregister();
 }
 
 #else

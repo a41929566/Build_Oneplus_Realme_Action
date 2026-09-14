@@ -122,8 +122,6 @@ do_apply() {
             printf '%s\n' rolled-back > "$STATE_FILE"
             return 1
         }
-    else
-        restore_android_id
     fi
 
     # B) 内核只读 ID（优先内核 hwid_spoof；不支持时回退到用户态 bind mount）
@@ -184,6 +182,11 @@ do_restore() {
     printf '%s\n' restored > "$STATE_FILE"
     log 2 "hardware id restore: hwid disabled, android_id restored"
 }
+restore_aid_only() {
+    restore_android_id
+    printf '%s\n' restored > "$STATE_FILE"
+    log 2 "android id restored"
+}
 
 # 真实 sysfs 读取（app 视角；内核开启后这里 root 仍可能读到真值，故同时给 hwid_status）
 read_real() {
@@ -238,6 +241,7 @@ case "$1" in
     apply) do_apply ;;
     regen) do_regen ;;
     restore) do_restore ;;
+    restore_aid) restore_aid_only ;;
     status) do_status ;;
     *) echo "usage: $0 {apply|regen|restore|status}" ;;
 esac

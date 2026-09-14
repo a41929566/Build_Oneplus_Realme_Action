@@ -15,3 +15,12 @@ config PKGMASK
 
 	  At boot only two no-op hooks are registered (empty target list);
 	  nothing is hidden until configuration is applied via sysfs.
+
+config PKGMASK_HWID
+	bool "PkgMask: opt-in read-only hardware ID interception"
+	depends on PKGMASK && KPROBES && KRETPROBES
+	default n
+	help
+	  Builds the optional read-only ID interception layer. It is disabled
+	  at runtime and does not register a kretprobe during kernel boot.
+	  The userspace controller must explicitly enable it after boot.

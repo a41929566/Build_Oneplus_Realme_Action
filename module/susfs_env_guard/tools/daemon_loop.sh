@@ -113,7 +113,7 @@ handle_action() {
         props_on) set_config spoof_props_enabled 1; sh "$MODDIR/tools/props_spoof.sh" apply ;;
         props_off) set_config spoof_props_enabled 0; sh "$MODDIR/tools/props_spoof.sh" restore ;;
         android_on) set_config spoof_android_id 1; sh "$MODDIR/tools/randomize.sh" apply ;;
-        android_off) set_config spoof_android_id 0; sh "$MODDIR/tools/randomize.sh" apply ;;
+        android_off) set_config spoof_android_id 0; sh "$MODDIR/tools/randomize.sh" restore_aid; sh "$MODDIR/tools/randomize.sh" apply ;;
         spoof_on|spoof_off|randomize_all|restore_all)
             log 1 "global action rejected; use per-feature actions"
             ;;

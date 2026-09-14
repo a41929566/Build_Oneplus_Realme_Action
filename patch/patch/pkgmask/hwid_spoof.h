@@ -11,7 +11,12 @@
 #ifndef __HWID_SPOOF_H__
 #define __HWID_SPOOF_H__
 
+#if IS_ENABLED(CONFIG_PKGMASK_HWID)
 int  hwid_spoof_init(void);
 void hwid_spoof_exit(void);
+#else
+static inline int hwid_spoof_init(void) { return 0; }
+static inline void hwid_spoof_exit(void) { }
+#endif
 
 #endif /* __HWID_SPOOF_H__ */

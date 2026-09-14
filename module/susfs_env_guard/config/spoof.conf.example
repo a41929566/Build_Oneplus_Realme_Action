@@ -7,10 +7,13 @@ global_spoof_enabled=0
 spoof_props_enabled=0
 spoof_hwid_enabled=0
 spoof_android_id=0
+# 只在对应内核读取拦截成功后同步 MAC 属性，避免属性层先变而
+# netlink/ioctl/HAL 仍返回真实值。1=启用安全约束，0=允许手动承担不一致风险。
+identity_consistency_guard=1
 spoof_serial=1
 spoof_build=1
-spoof_wifi_mac=1
-spoof_bt_mac=1
+spoof_wifi_mac=0
+spoof_bt_mac=0
 
 # 伪装“检测方”A：对这些 app 隐藏环境/撤销应用列表（空格分隔，WebUI 可勾选）
 # 王者/三角洲/和平精英/Maple

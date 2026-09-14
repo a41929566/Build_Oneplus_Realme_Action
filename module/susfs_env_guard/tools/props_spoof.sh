@@ -148,15 +148,23 @@ do_apply() {
     fi
 
     # 一加专属 MAC/唯一码属性（与内核 hwid 假 MAC 对齐，避免属性与 sysfs 不一致）
-    if [ "$(get_config spoof_wifi_mac 1)" = "1" ]; then
+    if [ "$(get_config spoof_wifi_mac 0)" = "1" ] &&
+       { [ "$(get_config identity_consistency_guard 1)" != "1" ] ||
+         [ "$(get_config spoof_hwid_enabled 0)" = "1" ]; }; then
         rp_set ro.com.cph.mac_address "$fake_wmac" 2>/dev/null
         rp_set vendor.cf.address "$fake_wmac" 2>/dev/null
         rp_set ro.com.cph.device_unique_mac "$fake_wmac" 2>/dev/null
         rp_set persist.vendor.wifi.mac "$fake_wmac" 2>/dev/null
+    elif [ "$(get_config spoof_wifi_mac 0)" = "1" ]; then
+        log 1 "wifi MAC properties skipped: kernel HWID interception is not enabled"
     fi
-    if [ "$(get_config spoof_bt_mac 1)" = "1" ]; then
+    if [ "$(get_config spoof_bt_mac 0)" = "1" ] &&
+       { [ "$(get_config identity_consistency_guard 1)" != "1" ] ||
+         [ "$(get_config spoof_hwid_enabled 0)" = "1" ]; }; then
         rp_set com.cph.bluetooth_mac "$fake_bmac" 2>/dev/null
         rp_set persist.vendor.bt.mac "$fake_bmac" 2>/dev/null
+    elif [ "$(get_config spoof_bt_mac 0)" = "1" ]; then
+        log 1 "bluetooth MAC properties skipped: kernel HWID interception is not enabled"
     fi
     # 主机名（默认常含机型，统一中性）
     rp_set net.hostname "localhost" 2>/dev/null
