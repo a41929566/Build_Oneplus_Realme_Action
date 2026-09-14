@@ -550,7 +550,7 @@ jobs:
           cd kernel_workspace/common
           echo "正在启用 BBG 基带守护…"
           curl -LSs https://raw.githubusercontent.com/vc-teahouse/Baseband-guard/main/setup.sh | bash
-          sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/lockdown/lockdown,baseband_guard/ } }' ./security/Kconfig
+          sed -i '/^config LSM$/,/^help$/{ /^[[:space:]]*default/ { /baseband_guard/! s/selinux/selinux,baseband_guard/ } }' ./security/Kconfig
           
       - name: ⚙️ Set ReSukiSU (设置ReSukiSU)
         id: ksu_step
