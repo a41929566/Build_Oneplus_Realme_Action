@@ -701,6 +701,7 @@ static int apply_config(void)
 		scope_mode, target_count, deny_uid_count, allow_uid_count,
 		hide_dirents ? 1 : 0, hook_getdents ? 1 : 0,
 		hook_perm ? 1 : 0, hook_getattr ? 1 : 0,
+		enable_syscall_hooks ? 1 : 0, binder_enabled ? 1 : 0,
 		hide_proc_enabled ? 1 : 0, proc_name_count);
 	return 0;
 }

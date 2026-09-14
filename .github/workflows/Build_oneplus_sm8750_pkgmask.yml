@@ -138,7 +138,10 @@ jobs:
             oneplus_ace5_ultra)
                 DEFAULT_SUFFIX='-android15-8-ge58033dc8ea6-abogki498046332-4k'
               ;;
-            oneplus_13 | oneplus_13t | oneplus_ace5_pro | oneplus_ace_6 | oneplus_pad_2 | realme_GT7 | realme_GT7pro_Speed | realme_GT8)
+            oneplus_ace5_pro)
+                DEFAULT_SUFFIX='-android15-8-g7e1f3c083cc6-abogki467167594-4k'
+              ;;
+            oneplus_13 | oneplus_13t | oneplus_ace_6 | oneplus_pad_2 | realme_GT7 | realme_GT7pro_Speed | realme_GT8)
                 DEFAULT_SUFFIX='-android15-8-g93e223c276e7-abogki500782043-4k'
               ;;
             realme_GT7pro)
@@ -164,7 +167,10 @@ jobs:
               oneplus_ace5_ultra)
                   KERNEL_TIME='Sun Mar 29 12:31:26 UTC 2026'
                 ;;
-              oneplus_13 | oneplus_13t | oneplus_ace5_pro | oneplus_ace_6 | oneplus_pad_2 |realme_GT7 | realme_GT7pro_Speed | realme_GT8)
+              oneplus_ace5_pro)
+                  KERNEL_TIME='Mon Dec  8 04:00:43 UTC 2025'
+                ;;
+              oneplus_13 | oneplus_13t | oneplus_ace_6 | oneplus_pad_2 |realme_GT7 | realme_GT7pro_Speed | realme_GT8)
                   KERNEL_TIME='Wed Apr  8 15:08:30 UTC 2026'
                 ;;
               realme_GT7pro)
@@ -649,11 +655,13 @@ jobs:
           ESCAPED_SUFFIX=$(printf '%s\n' "$DEFAULT_SUFFIX" | sed 's:[\/&]:\\&:g')
           sudo sed -i "s/-4k/$ESCAPED_SUFFIX/g" ./common/arch/arm64/configs/gki_defconfig
           sed -i 's/${scm_version}//' ./common/scripts/setlocalversion
-          sudo sed -i 's/^SUBLEVEL = 118/SUBLEVEL = 89/' ./common/Makefile
-          sudo sed -i 's/^filechk_utsrelease = .*/filechk_utsrelease = 6.6.89-android15-8-g7e1f3c083cc6-abogki467167594-4k/' ./common/Makefile || true
-          grep -n '^SUBLEVEL\|^filechk_utsrelease' ./common/Makefile || true
+          if [ "${{ env.DEVICES_NAME }}" = "oneplus_ace5_pro" ]; then
+            sudo sed -i 's/^SUBLEVEL = 118/SUBLEVEL = 89/' ./common/Makefile
+          sudo sed -i 's/^filechk_utsrelease = .*/filechk_utsrelease = 6.6.89-android15-8-g7e1f3c083cc6-abogki467167594-4k/' ./common/Makefile
+          grep -q '^SUBLEVEL = 89$' ./common/Makefile || { echo "FATAL: 无法设置内核 SUBLEVEL=89"; exit 1; }
           echo CONFIG_LOCALVERSION="-android15-8-g7e1f3c083cc6-abogki467167594-4k" >> ./common/arch/arm64/configs/gki_defconfig
-          echo "[OK] Kernel version spoofed to 6.6.89 with consistent localversion"
+          echo "[OK] 使用设备目标内核版本 6.6.89-android15-8-g7e1f3c083cc6-abogki467167594-4k"
+          fi
           echo "KBUILD_BUILD_USER=kleaf" >> $GITHUB_ENV
           echo "KBUILD_BUILD_HOST=build-host" >> $GITHUB_ENV
       - name: 📥 Start build timer (构建计时开始)
@@ -719,6 +727,27 @@ jobs:
           LD_PRELOAD=$PRELOAD_LIBS stat ./Makefile
           echo "ccache 状态："
           ccache -s
+      - name: 🔎 Verify final kernel features and release (验证最终内核配置与功能)
+        run: |
+          if [ "${{ env.DEVICES_NAME }}" != "oneplus_ace5_pro" ]; then
+            echo "非 oneplus_ace5_pro，跳过 Ace 5 Pro 专用 kernel.release 校验"
+            exit 0
+          fi
+          cd kernel_workspace/common
+          test -f out/.config || { echo "FATAL: out/.config 缺失"; exit 1; }
+          grep -Eq '^CONFIG_PKGMASK=y$' out/.config || { echo "FATAL: CONFIG_PKGMASK 未生效"; exit 1; }
+          grep -Eq '^CONFIG_KPROBES=y$' out/.config || { echo "FATAL: CONFIG_KPROBES 未生效"; exit 1; }
+          grep -Eq '^CONFIG_KRETPROBES=y$' out/.config || { echo "FATAL: CONFIG_KRETPROBES 未生效"; exit 1; }
+          test -f out/vmlinux || { echo "FATAL: out/vmlinux 缺失"; exit 1; }
+          LLVM_NM=../clang18/bin/llvm-nm
+          [ -x "$LLVM_NM" ] || LLVM_NM=llvm-nm
+          "$LLVM_NM" out/vmlinux | grep -Eq '(^| )hwid_spoof_init$' || { echo "FATAL: hwid_spoof_init 未链接进 vmlinux"; exit 1; }
+          RELEASE=$(cat out/include/config/kernel.release 2>/dev/null || true)
+          echo "最终 kernel.release=$RELEASE"
+          test "$RELEASE" = "6.6.89-android15-8-g7e1f3c083cc6-abogki467167594-4k" || {
+            echo "FATAL: 最终 kernel.release 不匹配设备：$RELEASE"
+            exit 1
+          }
       
       - name: 🕒 Calculate build time (计算构建时间)
         run: |
