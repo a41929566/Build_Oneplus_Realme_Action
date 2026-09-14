@@ -816,6 +816,25 @@ jobs:
         with:
          name: AK3_${{ env.KSUVER }}_${{ env.DEVICES_NAME }}_ReSukiSU
          path: ./AnyKernel3/*
+      - name: 📦 Build SUSFS Env Guard module (打包环境守护模块)
+        run: |
+          set -euo pipefail
+          MODULE_SRC="${GITHUB_WORKSPACE}/module/susfs_env_guard"
+          test -f "$MODULE_SRC/module.prop" || { echo "FATAL: module source missing"; exit 1; }
+          test -f "$MODULE_SRC/tools/daemon_loop.sh" || { echo "FATAL: daemon source missing"; exit 1; }
+          MODULE_VERSION="$(sed -n 's/^version=//p' "$MODULE_SRC/module.prop" | head -n 1)"
+          test -n "$MODULE_VERSION" || { echo "FATAL: module version missing"; exit 1; }
+          OUT="SUSFS-Env-Guard-${MODULE_VERSION}-${DEVICES_NAME}"
+          rm -rf "$OUT" "${OUT}.zip"
+          cp -a "$MODULE_SRC" "$OUT"
+          (cd "$OUT" && zip -qr "../${OUT}.zip" .)
+          unzip -t "${OUT}.zip" >/dev/null
+          echo "module artifact: ${OUT}.zip"
+      - name: 📤 Upload SUSFS Env Guard module (上传环境守护模块)
+        uses: actions/upload-artifact@v6
+        with:
+          name: SUSFS-Env-Guard-${{ env.DEVICES_NAME }}
+          path: SUSFS-Env-Guard-*.zip
   upload_rekernel:
     name: Upload Re-Kernel Module
     if: ${{ github.event.inputs.enable_ReKernel == 'true' }}
@@ -934,6 +953,10 @@ jobs:
               (cd "$rk_dir" && zip -qr "../${name}.zip" .)
             fi
           done
+          while IFS= read -r env_zip; do
+            [ -f "$env_zip" ] || continue
+            cp -f "$env_zip" "./release_assets/$(basename "$env_zip")"
+          done < <(find ./release_assets -mindepth 2 -type f -name 'SUSFS-Env-Guard-*.zip' -print)
           # 列出所有待上传的文件
           echo ""
           echo "=== 待上传到 Release 的文件 ==="
@@ -1015,7 +1038,7 @@ jobs:
           cat release_notes.md
           echo ""
           # 收集所有待上传的文件（仅 AK3 zip 和 Re-Kernel zip）
-          RELEASE_FILES=$(find ./release_assets -maxdepth 1 -type f \( -name 'AK3_*.zip' -o -name 'Re-Kernel-v*.zip' \) 2>/dev/null || true)
+          RELEASE_FILES=$(find ./release_assets -maxdepth 1 -type f \( -name 'AK3_*.zip' -o -name 'Re-Kernel-v*.zip' -o -name 'SUSFS-Env-Guard-*.zip' \) 2>/dev/null || true)
           if [ -z "$RELEASE_FILES" ]; then
             echo "::warning::没有找到待上传的发布文件"
             RELEASE_FILES=""

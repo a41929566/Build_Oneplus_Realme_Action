@@ -1,0 +1,16 @@
+# ===== GMS / 应用商店 =====
+com.android.vending
+com.google.android.gms
+com.google.android.gsf
+# ===== Maple 检测 =====
+com.maple.detect
+# ===== 专业 Key Attestation / 环境检测工具 =====
+io.github.vvb2060.keyattestation
+io.github.vvb2060.mahoshojo
+io.github.qwq233.keyattestation
+com.reveny.nativecheck
+com.zhenxi.hunter
+icu.nullptr.nativetest
+com.android.nativetest
+io.liankong.riskdetector
+luna.safe.luna

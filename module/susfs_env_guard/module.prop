@@ -1,0 +1,7 @@
+id=susfs_env_guard
+name=SUSFS Env Guard
+version=v6.2
+versionCode=62
+webui=true
+author=SUSFS
+description=Kernel read interception diagnostics with safe rollback; requires SUSFS, pkgmask and hwid_spoof.

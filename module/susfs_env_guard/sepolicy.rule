@@ -1,0 +1,8 @@
+# ===== 本模块：守护/工具运行所需（最小化） =====
+# 守护进程读取应用数据目录属主以解析 uid（stat），不额外开放写
+allow magisk app_data_file dir { read open getattr search }
+allow magisk app_data_file file { read open getattr }
+allow ksu app_data_file dir { read open getattr search }
+allow ksu app_data_file file { read open getattr }
+allow apd app_data_file dir { read open getattr search }
+allow apd app_data_file file { read open getattr }

@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>SUSFS 环境守护</title>
+<style>
+:root{
+  --bg:#0f1115; --card:#1a1d24; --card2:#22262f; --line:#2c313c;
+  --txt:#e8eaed; --sub:#9aa0ab; --dim:#6b7280;
+  --ok:#34d399; --warn:#fbbf24; --bad:#f87171; --info:#5eb1ef;
+  --accent:#3ddc97; --accent2:#2bb67f; --tap:#2a2f3a;
+  --radius:16px;
+}
+@media(prefers-color-scheme:light){
+  :root{--bg:#f2f3f5;--card:#ffffff;--card2:#f6f7f9;--line:#e5e7eb;--txt:#1c1e22;--sub:#5b6270;--dim:#9aa0aa;--tap:#eef0f3;}
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;margin:0;padding:0}
+html,body{background:var(--bg);color:var(--txt);font-family:-apple-system,"PingFang SC","MiSans","Microsoft YaHei",sans-serif;font-size:15px;line-height:1.45}
+body{max-width:680px;margin:0 auto;padding:0 14px 90px}
+.header{padding:18px 4px 10px;display:flex;align-items:center;justify-content:space-between}
+.header h1{font-size:20px;font-weight:700;letter-spacing:.5px}
+.header .ver{font-size:12px;color:var(--sub)}
+.live{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--sub)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--dim)}
+.dot.on{background:var(--ok);box-shadow:0 0 6px var(--ok)}
+.dot.off{background:var(--bad)}
+.tabs{position:sticky;top:0;z-index:20;background:var(--bg);padding:8px 0;display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch}
+.tab{flex:1 0 auto;padding:9px 14px;border-radius:12px;background:var(--card);color:var(--sub);font-size:13.5px;font-weight:600;border:1px solid var(--line);text-align:center;cursor:pointer;user-select:none;white-space:nowrap}
+.tab.active{background:var(--accent2);color:#fff;border-color:var(--accent2)}
+.page{display:none;animation:fade .2s}
+.page.active{display:block}
+@keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:15px;margin-bottom:12px}
+.card h3{font-size:14px;font-weight:700;margin-bottom:10px;display:flex;align-items:center;gap:8px}
+.card h3 .tag{font-size:11px;color:var(--sub);font-weight:500}
+.row{display:flex;align-items:center;justify-content:space-between;padding:9px 0;border-bottom:1px solid var(--line);gap:10px}
+.row:last-child{border-bottom:none}
+.row .k{color:var(--sub);font-size:13px;flex:0 0 38%}
+.row .v{font-size:13px;text-align:right;word-break:break-all;font-variant-numeric:tabular-nums;flex:1}
+.v.ok{color:var(--ok)} .v.bad{color:var(--bad)} .v.warn{color:var(--warn)} .v.dim{color:var(--dim)}
+.mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px}
+/* 开关 */
+.switch{position:relative;width:52px;height:30px;flex:0 0 52px;cursor:pointer}
+.switch input{display:none}
+.slider{position:absolute;inset:0;background:var(--line);border-radius:30px;transition:.2s}
+.slider::before{content:"";position:absolute;width:24px;height:24px;left:3px;top:3px;background:#fff;border-radius:50%;transition:.2s;box-shadow:0 1px 3px rgba(0,0,0,.3)}
+.switch input:checked+.slider{background:var(--accent2)}
+.switch input:checked+.slider::before{transform:translateX(22px)}
+.bigswitch{display:flex;align-items:center;justify-content:space-between;background:linear-gradient(135deg,var(--accent2),#1f9d72);color:#fff;border-radius:var(--radius);padding:18px;margin-bottom:12px}
+.bigswitch.off{background:var(--card);border:1px solid var(--line);color:var(--txt)}
+.bigswitch .t{font-size:17px;font-weight:700}
+.bigswitch .s{font-size:12.5px;opacity:.9;margin-top:3px}
+.bigswitch .switch{transform:scale(1.15)}
+.btn{display:block;width:100%;padding:13px;border-radius:12px;border:1px solid var(--line);background:var(--card2);color:var(--txt);font-size:14.5px;font-weight:600;text-align:center;cursor:pointer;user-select:none;margin-top:9px}
+.btn:active{background:var(--tap)}
+.btn.primary{background:var(--accent2);border-color:var(--accent2);color:#fff}
+.btn.danger{color:var(--bad);border-color:var(--bad)}
+.btn.row2{display:inline-block;width:calc(50% - 5px)}
+.btnrow{display:flex;gap:10px}
+.pill{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11.5px;font-weight:600}
+.pill.ok{background:rgba(52,211,153,.15);color:var(--ok)}
+.pill.bad{background:rgba(248,113,113,.15);color:var(--bad)}
+.pill.warn{background:rgba(251,191,36,.15);color:var(--warn)}
+.pill.info{background:rgba(94,177,239,.15);color:var(--info)}
+input[type=text]{width:100%;padding:11px 12px;border-radius:10px;border:1px solid var(--line);background:var(--card2);color:var(--txt);font-size:13.5px;outline:none}
+input[type=text]:focus{border-color:var(--accent2)}
+label.chk{display:flex;align-items:center;gap:9px;padding:8px 4px;border-bottom:1px solid var(--line);font-size:13.5px;cursor:pointer}
+label.chk:last-child{border:none}
+label.chk input{width:18px;height:18px;accent-color:var(--accent2)}
+label.chk .pn{flex:1;word-break:break-all}
+label.chk .uid{font-size:11px;color:var(--dim);font-family:ui-monospace,monospace}
+.scrollbox{max-height:260px;overflow-y:auto;border:1px solid var(--line);border-radius:12px;padding:4px 10px;background:var(--card2)}
+.toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);background:#000d;color:#fff;padding:11px 20px;border-radius:24px;font-size:13.5px;opacity:0;transition:.25s;pointer-events:none;z-index:99;max-width:90%;text-align:center}
+.toast.show{opacity:1}
+.hint{font-size:12px;color:var(--sub);line-height:1.55;margin:6px 0}
+.compare{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;font-size:11px;color:var(--dim);margin-top:4px}
+.compare div{background:var(--card2);border-radius:8px;padding:6px 8px;word-break:break-all}
+.compare b{display:block;color:var(--sub);font-size:10px;margin-bottom:2px;font-weight:600}
+.stat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin-bottom:12px}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;text-align:center}
+.stat .n{font-size:20px;font-weight:700}
+.stat .l{font-size:11.5px;color:var(--sub);margin-top:3px}
+.nok{color:var(--ok)}.nbad{color:var(--bad)}.nwarn{color:var(--warn)}
+</style>
+</head>
+<body>
+<div class="header">
+  <div><h1>SUSFS 环境守护</h1><div class="ver" id="ver">v6.2 · 内核接口方案</div></div>
+  <div class="live"><span class="dot" id="liveDot"></span><span id="liveTxt">连接中</span></div>
+</div>
+
+<!-- 全局开关始终可见 -->
+<div class="bigswitch off" id="bigBar">
+  <div><div class="t" id="bigT">全局伪装</div><div class="s" id="bigS">关闭 · 显示真实值</div></div>
+  <label class="switch"><input type="checkbox" id="globalToggle"><span class="slider"></span></label>
+</div>
+
+<div class="tabs">
+  <div class="tab active" data-p="overview">总览</div>
+  <div class="tab" data-p="props">属性伪装</div>
+  <div class="tab" data-p="hwid">硬件ID</div>
+  <div class="tab" data-p="mask">应用隐藏</div>
+</div>
+
+<!-- ============ 总览 ============ -->
+<div class="page active" id="page-overview">
+  <div class="stat-grid">
+    <div class="stat"><div class="n nok" id="scPass">-</div><div class="l">自检通过</div></div>
+    <div class="stat"><div class="n nwarn" id="scWarn">-</div><div class="l">警告</div></div>
+    <div class="stat"><div class="n nbad" id="scFail">-</div><div class="l">失败</div></div>
+  </div>
+  <div class="card">
+    <h3>内核与框架</h3>
+    <div class="row"><span class="k">内核版本</span><span class="v mono" id="ovKver">-</span></div>
+    <div class="row"><span class="k">架构</span><span class="v" id="ovKarch">-</span></div>
+    <div class="row"><span class="k">SUSFS</span><span class="v" id="ovSusfs">-</span></div>
+    <div class="row"><span class="k">pkgmask</span><span class="v" id="ovPm">-</span></div>
+    <div class="row"><span class="k">硬件ID拦截</span><span class="v" id="ovHw">-</span></div>
+  </div>
+  <div class="card">
+    <h3>快捷操作</h3>
+    <button class="btn primary" onclick="act('randomize_all')">一键随机全部指纹</button>
+    <button class="btn" onclick="act('restore_all')">一键还原真实值</button>
+    <div class="btnrow">
+      <button class="btn row2" onclick="act('selfcheck')">重新自检</button>
+      <button class="btn row2" onclick="act('cleanup')">清理运行痕迹</button>
+    </div>
+  </div>
+  <div class="card">
+    <h3>说明</h3>
+    <div class="hint">所有状态每 3 秒自动刷新；开关与按钮即时下发、即时反馈。关闭全局伪装后，属性与硬件 ID 立即回落真实值（该漏即漏），便于对照检测。</div>
+  </div>
+</div>
+
+<!-- ============ 属性伪装 ============ -->
+<div class="page" id="page-props">
+  <div class="card">
+    <h3>锁状态 / Root 痕迹 <span class="tag">JVM·getprop·native 三通道一致</span></h3>
+    <div class="row"><span class="k">verifiedbootstate</span><span class="v" id="p_vb">-</span></div>
+    <div class="row"><span class="k">ro.debuggable</span><span class="v" id="p_dbg">-</span></div>
+    <div class="row"><span class="k">build.tags</span><span class="v" id="p_tags">-</span></div>
+    <div class="row"><span class="k">build.type</span><span class="v" id="p_type">-</span></div>
+    <div class="row"><span class="k">oem_unlock</span><span class="v" id="p_oem">-</span></div>
+  </div>
+  <div class="card">
+    <h3>个体指纹（只随机个体段，机型保持真机自洽）</h3>
+    <div class="row"><span class="k">序列号</span><span class="v" id="p_serial">-</span></div>
+    <div class="row"><span class="k">incremental</span><span class="v" id="p_inc">-</span></div>
+    <div class="row"><span class="k">机型(不改)</span><span class="v dim" id="p_model">-</span></div>
+    <div class="row"><span class="k">fingerprint</span><span class="v mono" id="p_fp" style="font-size:11px">-</span></div>
+    <div class="hint">当前值 / 假值对照如下，一致(显示假值)即三通道同源：</div>
+    <div class="compare">
+      <div><b>当前序列号</b><span id="pc_serial" class="mono">-</span></div>
+      <div><b>假值</b><span id="pf_serial" class="mono">-</span></div>
+      <div><b>当前增量</b><span id="pc_inc" class="mono">-</span></div>
+    </div>
+  </div>
+  <button class="btn primary" onclick="act('randomize_all')">重新随机属性指纹</button>
+</div>
+
+<!-- ============ 硬件ID ============ -->
+<div class="page" id="page-hwid">
+  <div class="card">
+    <h3>内核只读硬件 ID 拦截 <span class="tag" id="hwSupTag">-</span></h3>
+    <div class="row"><span class="k">驱动状态</span><span class="v" id="hwEn">-</span></div>
+    <div class="hint" id="hwHint">读取 SoC 序列号 / cpuinfo / UFS CID / 网卡 MAC 时由内核等长替换，不改真实硬件、不断网。需要包含 hwid_spoof 的内核。</div>
+  </div>
+  <div class="card" id="hwCard">
+    <h3>各项：假值 → 驱动实际生效值</h3>
+    <div class="row"><span class="k">Android ID</span><span class="v" id="hw_aid">-</span></div>
+    <div class="row"><span class="k">SoC Serial</span><span class="v" id="hw_soc">-</span></div>
+    <div class="row"><span class="k">UFS/eMMC CID</span><span class="v" id="hw_cid">-</span></div>
+    <div class="row"><span class="k">cpuinfo Serial</span><span class="v" id="hw_cpu">-</span></div>
+    <div class="row"><span class="k">WLAN MAC</span><span class="v" id="hw_wmac">-</span></div>
+    <div class="row"><span class="k">蓝牙 MAC</span><span class="v" id="hw_bmac">-</span></div>
+  </div>
+  <div class="btnrow">
+    <button class="btn row2 primary" onclick="act('hwid_on')">启用拦截</button>
+    <button class="btn row2" onclick="act('hwid_off')">暂停拦截(漏真)</button>
+  </div>
+  <button class="btn" onclick="act('randomize_all')">重新随机硬件 ID</button>
+</div>
+
+<!-- ============ 应用隐藏 pkgmask ============ -->
+<div class="page" id="page-mask">
+  <div class="card">
+    <h3>① 选择检测方 A（对谁隐藏 / 撤销应用列表权限）</h3>
+    <input type="text" id="searchA" placeholder="搜索包名…" oninput="renderPkgList()">
+    <div class="scrollbox" id="listA" style="margin-top:8px">加载应用列表中…</div>
+    <div class="hint">勾选即对该 app 隐藏 B、并自动撤销其“查询所有应用”权限（过三方环境检测）。</div>
+  </div>
+  <div class="card">
+    <h3>② 被隐藏对象 B（包名，空格分隔）</h3>
+    <input type="text" id="hideB" placeholder="bin.mt.plus bin.mt.plus.canary">
+    <button class="btn primary" style="margin-top:9px" onclick="saveMask()">保存并应用</button>
+  </div>
+  <div class="card">
+    <h3>手动隐藏进程（/proc，按 task->comm）</h3>
+    <input type="text" id="procName" placeholder="进程名(=包名主进程，≤15字符)">
+    <button class="btn" style="margin-top:9px" onclick="addProc()">添加隐藏进程</button>
+    <div class="hint">进程名通常等于包名主进程（超长自动截断 15 字符）。当前内核隐藏名单：</div>
+    <div class="v mono" id="curProcNames" style="text-align:left;padding:6px 2px">-</div>
+  </div>
+  <div class="card">
+    <h3>当前内核生效状态</h3>
+    <div class="row"><span class="k">模式</span><span class="v mono" id="pm_scope">-</span></div>
+    <div class="row"><span class="k">deny_uids(A)</span><span class="v mono" id="pm_deny">-</span></div>
+    <div class="row"><span class="k">target_paths(B)</span><span class="v mono" id="pm_paths" style="font-size:11px">-</span></div>
+    <div class="row"><span class="k">进程隐藏</span><span class="v" id="pm_hproc">-</span></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<script>
+const ACTION_FILE='/data/adb/susfs_env_guard/action.txt';
+let S=null, allPkgs=null, selectedA=new Set(), hideBSet=new Set();
+
+/* ---------- 多管理器原生 bridge ---------- */
+async function shExec(cmd){
+  try{
+    if(window.ksu){
+      if(ksu.exec){
+        try{const r=await ksu.exec(cmd); return (r&&(r.stdout??r.out))||'';}catch(e){}
+        return await new Promise(res=>ksu.exec(cmd,o=>res(o||'')));
+      }
+    }
+    if(window.ap&&ap.exec){const r=await ap.exec(cmd);return (r&&r.stdout)||'';}
+    for(const name of ['mmrl','suki','ReSukiSU','resukisu']){
+      if(window[name]&&window[name].exec){const r=await window[name].exec(cmd);return (r&&(r.stdout??r.out))||'';}
+    }
+  }catch(e){}
+  // http 兜底（多数管理器无此通道，失败即忽略）
+  try{const r=await fetch('/exec?cmd='+encodeURIComponent(cmd));if(r.ok)return await r.text();}catch(e){}
+  return null;
+}
+async function act(action){
+  toast('已下发：'+action);
+  await shExec('echo "'+action+'" > '+ACTION_FILE);
+  setTimeout(refresh,1200);setTimeout(refresh,3000);
+}
+function toast(m){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');clearTimeout(t._t);t._t=setTimeout(()=>t.classList.remove('show'),1800);}
+
+/* ---------- tab ---------- */
+document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
+  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+  document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));
+  t.classList.add('active');
+  document.getElementById('page-'+t.dataset.p).classList.add('active');
+  if(t.dataset.p==='mask') loadPackages();
+});
+
+/* ---------- 全局开关 ---------- */
+document.getElementById('globalToggle').onchange=e=>act(e.target.checked?'spoof_on':'spoof_off');
+
+/* ---------- 状态渲染 ---------- */
+function pill(ok,yes,no){return ok? '<span class="pill ok">'+yes+'</span>':'<span class="pill bad">'+(no||'否')+'</span>';}
+function set(id,txt,cls){const e=document.getElementById(id);if(e){e.textContent=txt;if(cls)e.className='v '+cls;}}
+function eq(a,b){return a&&b&&a===b;}
+
+function render(){
+  if(!S)return;
+  const g=S.global==='1';
+  document.getElementById('globalToggle').checked=g;
+  const bar=document.getElementById('bigBar');
+  bar.classList.toggle('off',!g);
+  document.getElementById('bigT').textContent=g?'全局伪装已开启':'全局伪装已关闭';
+  document.getElementById('bigS').textContent=g?'全部伪装生效中':'关闭 · 显示真实值';
+
+  // 总览
+  if(S.selfcheck){sc('scPass',S.selfcheck.pass);sc('scWarn',S.selfcheck.warn);sc('scFail',S.selfcheck.fail);}
+  if(S.kernel){set('ovKver',S.kernel.version||'-');set('ovKarch',S.kernel.arch||'-');}
+  set('ovSusfs',S.susfs&&S.susfs.version&&S.susfs.version!=='N/A'?S.susfs.version:'未检测',S.susfs&&S.susfs.version!=='N/A'?'ok':'bad');
+  const pm=S.pkgmask||{};
+  set('ovPm',pm.supported==='1'?(pm.scope||'已加载'):'内核无pkgmask',pm.supported==='1'?'ok':'bad');
+  const hw=S.hwid||{};
+  set('ovHw',hw.supported==='1'?(hw.enabled==='1'?'已启用':'已加载未启用'):'内核不支持',hw.enabled==='1'?'ok':(hw.supported==='1'?'warn':'bad'));
+
+  // 属性
+  if(S.props){
+    const p=S.props;
+    set('p_vb',p.vbstate||'-',p.vbstate==='green'?'ok':'bad');
+    set('p_dbg',p.debuggable||'-',p.debuggable==='0'?'ok':'bad');
+    set('p_tags',p.tags||'-',p.tags==='release-keys'?'ok':'bad');
+    set('p_type',p.type||'-',p.type==='user'?'ok':'bad');
+    set('p_oem',p.oem||'-',p.oem==='0'?'ok':'bad');
+    set('p_serial',p.serial||'-',g&&eq(p.serial,p.fake_serial)?'ok':'dim');
+    set('p_inc',p.incremental||'-',g&&eq(p.incremental,p.fake_inc)?'ok':'dim');
+    set('p_model',p.model||'-');
+    set('p_fp',p.fingerprint||'-');
+    document.getElementById('pc_serial').textContent=p.serial||'-';
+    document.getElementById('pf_serial').textContent=p.fake_serial||'-';
+    document.getElementById('pc_inc').textContent=p.incremental||'-';
+  }
+  // 硬件ID
+  set('hwSupTag',hw.supported==='1'?'驱动已编译':'缺驱动');
+  set('hwEn',hw.supported!=='1'?'内核不支持':(hw.enabled==='1'?'拦截中':'已暂停'),hw.enabled==='1'?'ok':(hw.supported==='1'?'warn':'bad'));
+  const row=(cur,fake)=>{
+    if(!fake)return ['-','dim'];
+    const ok=eq(cur,fake);
+    return [(cur||'空')+'  '+(ok?'✓生效':'✗未生效'),ok?'ok':'bad'];
+  };
+  let r;
+  r=row(hw.cur_aid,hw.fake_aid);set('hw_aid',r[0],r[1]);
+  r=row(hw.soc,hw.fake_soc);set('hw_soc',r[0],r[1]);
+  r=row(hw.cid,hw.fake_cid);set('hw_cid',r[0],r[1]);
+  r=row(hw.cpu,hw.fake_cpu);set('hw_cpu',r[0],r[1]);
+  r=row(hw.wmac,hw.fake_wmac);set('hw_wmac',r[0],r[1]);
+  r=row(hw.bmac,hw.fake_bmac);set('hw_bmac',r[0],r[1]);
+
+  // pkgmask
+  set('pm_scope',pm.scope||'-');
+  set('pm_deny',pm.deny_uids||'(空)');
+  set('pm_paths',pm.target_paths||'(空)');
+  set('pm_hproc',pm.hide_proc==='1'?'已启用':'未启用',pm.hide_proc==='1'?'ok':'bad');
+  set('curProcNames',pm.hide_proc_names||'(空)');
+  if(pm.targets){pm.targets.split(/\s+/).forEach(x=>x&&selectedA.add(x));}
+  if(pm.hide_pkgs&&!document.getElementById('hideB').value)document.getElementById('hideB').value=pm.hide_pkgs;
+
+}
+function sc(id,v){const e=document.getElementById(id);if(e)e.textContent=(v??'-');}
+
+async function refresh(){
+  try{
+    const r=await fetch('status.json?t='+Date.now());
+    if(r.ok){S=await r.json();render();live(true);}
+  }catch(e){live(false);}
+}
+function live(ok){document.getElementById('liveDot').className='dot '+(ok?'on':'off');document.getElementById('liveTxt').textContent=ok?'实时':'等待守护';}
+
+/* ---------- 应用列表 ---------- */
+async function loadPackages(){
+  if(allPkgs)return renderPkgList();
+  const el=document.getElementById('listA');el.textContent='加载中…';
+  // 原生 API 优先
+  let txt=null;
+  try{
+    if(window.ksu&&ksu.listPackages){const p=await ksu.listPackages();if(p)allPkgs=p;}
+  }catch(e){}
+  if(!allPkgs){
+    txt=await shExec('pm list packages -U');
+    if(txt){
+      allPkgs=[];
+      txt.split('\n').forEach(l=>{const m=l.match(/package:(\S+)\s+uid:(\d+)/);if(m)allPkgs.push({packageName:m[1],uid:m[2]});});
+    }
+  }else if(!Array.isArray(allPkgs)){allPkgs=Object.values(allPkgs);}
+  if(!allPkgs||!allPkgs.length){
+    // 常用目标兜底，保证不卡死
+    allPkgs=[
+      {packageName:'com.maple.detect'},{packageName:'com.tencent.tmgp.sgame'},
+      {packageName:'com.tencent.tmgp.dfm'},{packageName:'com.tencent.tmgp.pubgmhd'},
+      {packageName:'io.github.vvb2060.keyattestation'},{packageName:'com.reveny.nativecheck'}
+    ];
+    el.innerHTML='<div class="hint">管理器未返回应用列表，已给出常用目标，也可直接在下方手动输入包名。</div>';
+  }
+  renderPkgList();
+}
+function renderPkgList(){
+  if(!allPkgs)return;
+  const q=(document.getElementById('searchA').value||'').toLowerCase();
+  const box=document.getElementById('listA');
+  // 当前已选优先显示
+  const arr=allPkgs.filter(p=>!q||p.packageName.toLowerCase().includes(q)).slice(0,400);
+  box.innerHTML=arr.map(p=>{
+    const ck=selectedA.has(p.packageName)?'checked':'';
+    return '<label class="chk"><input type="checkbox" '+ck+' onchange="toggleA(\''+p.packageName+'\',this.checked)"><span class="pn">'+p.packageName+'</span><span class="uid">'+(p.uid?'uid:'+p.uid:'')+'</span></label>';
+  }).join('')||'<div class="hint">无匹配</div>';
+}
+function toggleA(pkg,on){on?selectedA.add(pkg):selectedA.delete(pkg);}
+function saveMask(){
+  const list=[...selectedA].join(' ');
+  const hides=document.getElementById('hideB').value.trim();
+  act('targets_set:'+list);
+  setTimeout(()=>act('hidepkgs_set:'+hides),400);
+  toast('已保存并写入内核');
+}
+function addProc(){
+  const n=document.getElementById('procName').value.trim();
+  if(!n)return toast('请输入进程名');
+  act('hide_proc_add:'+n);document.getElementById('procName').value='';
+}
+
+refresh();
+setInterval(refresh,3000);
+</script>
+</body>
+</html>
