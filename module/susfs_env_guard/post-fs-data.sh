@@ -1,7 +1,6 @@
 #!/system/bin/sh
 # SUSFS环境守护 v6.3 - post-fs-data.sh（zygote 启动前执行）
-# 只做最基础的文件准备，所有属性/内核操作延后到 service.sh
-# 避免在 zygote 前修改任何属性，导致系统启动完整性校验失败
+# 极早期阶段：负责所有 ro.* 属性的伪装（必须在此阶段，zygote 启动后 ro.* 锁死，否则永远改不动）
 MODDIR=${0%/*}
 . "$MODDIR/tools/lib_common.sh"
 
@@ -16,5 +15,14 @@ if [ -f "$MODDIR/sepolicy.rule" ]; then
     "$MAGISKPOLICY" --apply "$MODDIR/sepolicy.rule" 2>/dev/null
 fi
 
-# 所有属性伪装 / 内核 hwid / android_id 全部延后到 service.sh
-# 原因：zygote 启动前修改 ro.* 属性或挂 vfs_read kretprobe 都可能导致系统级重启
+# ============================================================
+# 核心修改：在 zygote 启动前执行属性伪装！
+# 原因：ro.*（如 ro.boot.verifiedbootstate, ro.build.fingerprint）
+#       必须在系统启动的最早期用 resetprop 覆盖，晚于此阶段将无法修改。
+# ============================================================
+if [ -f "$MODDIR/tools/props_spoof.sh" ]; then
+    sh "$MODDIR/tools/props_spoof.sh" apply >> "$RUN_DIR/props_post_fs.log" 2>&1
+fi
+
+# 注意：内核 hwid 和 android_id 依旧延后到 service.sh 执行
+# 原因：zygote 启动前挂 vfs_read kretprobe 可能导致系统级重启
