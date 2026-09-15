@@ -23,7 +23,7 @@ hwid_supported() {
 write_node() {
     local node=$1 value=$2
     [ -w "$HW_DIR/$node" ] || return 1
-    printf '%s\n' "$value" > "$HW_DIR/$node" 2>/dev/null
+    printf '%s' "$value" > "$HW_DIR/$node" 2>/dev/null
 }
 aid_read() {
     settings --user "$AID_USER" get secure android_id 2>/dev/null |
