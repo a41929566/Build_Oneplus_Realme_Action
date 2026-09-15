@@ -566,15 +566,27 @@ jobs:
           echo "ksuver=$KSU_VERSION" >> $GITHUB_OUTPUT
           
             
-      - name: 🔧 Set up SUSFS (配置 SUSFS)
+      - name: 🔧 Set up SUSFS (配置 SUSFS - 官方原仓库自动最新版)
         if: ${{ env.ENABLE_SUSFS == 'true' }}
         run: |
           cd kernel_workspace
-          git clone --depth=1 https://github.com/cctv18/susfs4oki.git susfs4ksu -b oki-android15-6.6
-          wget https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/69_hide_stuff.patch -O ./common/69_hide_stuff.patch
+          # 官方原仓库最新版（GitLab simonpunk/susfs4ksu, gki-android15-6.6 分支, 每次编译拉取最新 HEAD）
+          if git clone --depth=1 https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu -b gki-android15-6.6; then
+            echo "[OK] 官方 SUSFS 原仓库最新版拉取成功 (gitlab.com/simonpunk/susfs4ksu @ gki-android15-6.6)"
+          else
+            echo "[WARN] GitLab 官方仓库拉取失败，回退 GitHub 镜像 cctv18/susfs4oki"
+            git clone --depth=1 https://github.com/cctv18/susfs4oki.git susfs4ksu -b oki-android15-6.6
+          fi
+          test -f ./susfs4ksu/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch || { echo "FATAL: SUSFS 补丁缺失"; exit 1; }
+          test -d ./susfs4ksu/ksu_module_susfs || { echo "FATAL: SUSFS 管理器模块缺失"; exit 1; }
+          wget -q https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8750/main/other_patch/69_hide_stuff.patch -O ./common/69_hide_stuff.patch || true
           cp ./susfs4ksu/kernel_patches/50_add_susfs_in_gki-android15-6.6.patch ./common/
           cp ./susfs4ksu/kernel_patches/fs/* ./common/fs/
           cp ./susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
+          # 官方 SUSFS 管理器模块（ksu_module_susfs）存到工作区，供 release 打包
+          mkdir -p "${GITHUB_WORKSPACE}/module/susfs_ksu_module"
+          cp -a ./susfs4ksu/ksu_module_susfs/* "${GITHUB_WORKSPACE}/module/susfs_ksu_module/"
+          echo "[OK] SUSFS 官方管理器模块已就位 (ksu_module_susfs)"
           cd ./common
           patch -p1 < 50_add_susfs_in_gki-android15-6.6.patch || true
           patch -p1 -N -F 3 < 69_hide_stuff.patch || true
@@ -626,11 +638,14 @@ jobs:
           
           #Remove check_defconfig
           sudo sed -i 's/check_defconfig//' ./common/build.config.gki
-      - name: 🔧 Apply PkgMask (应用 pkgmask v4.9 + hwid_spoof 硬件ID拦截)
+      - name: 🔧 Apply PkgMask (应用 pkgmask v4.11 包名/进程隐藏 + hwid_spoof 硬件ID拦截)
         run: |
           cd kernel_workspace/common
           echo "应用 pkgmask readdir 过滤弱钩子 (fs/readdir.c)..."
           cp "${GITHUB_WORKSPACE}/patch/patch/readdir.c" fs/readdir.c
+          # 合并版 readdir.c 校验：SUSFS SUS_PATH 段 + pkgmask 弱钩子必须共存
+          grep -q 'susfs_is_inode_sus_path' fs/readdir.c || { echo "FATAL: readdir.c 缺 SUSFS SUS_PATH 段"; exit 1; }
+          grep -q 'pmk_filter_dirent' fs/readdir.c || { echo "FATAL: readdir.c 缺 pkgmask 弱钩子"; exit 1; }
           echo "安装 pkgmask 驱动源码 (drivers/misc/pkgmask/: Kconfig/Makefile/pkgmask.c/hwid_spoof.c/h)..."
           mkdir -p drivers/misc/pkgmask
           cp "${GITHUB_WORKSPACE}"/patch/patch/pkgmask/* drivers/misc/pkgmask/
@@ -645,9 +660,11 @@ jobs:
             printf '\nobj-$(CONFIG_PKGMASK) += pkgmask/\n' >> drivers/misc/Makefile
           grep -q 'CONFIG_PKGMASK=y' arch/arm64/configs/gki_defconfig || \
             echo 'CONFIG_PKGMASK=y' >> arch/arm64/configs/gki_defconfig
-          # v4.6 关键: binder.c 零改动 (BINDER_INJECT=False) - 不注入任何 binder 代码
+          # v4.11 关键: binder.c 零改动 (BINDER_INJECT=False) - 不注入任何 binder 代码
           echo "binder.c 未修改 (BINDER_INJECT=False)，无 binder 崩溃面"
-          echo "pkgmask + hwid_spoof 补丁应用完成"
+          grep -q 'hwid_spoof_init()' drivers/misc/pkgmask/pkgmask.c && echo "[OK] pkgmask v4.11 已集成 hwid_spoof_init"
+          grep -q 'hide_proc_enabled' drivers/misc/pkgmask/pkgmask.c && echo "[OK] pkgmask v4.11 进程隐藏参数在位"
+          echo "pkgmask v4.11 + hwid_spoof 补丁应用完成"
           ls -l drivers/misc/pkgmask/
       - name: 🔧 Set Kernel name (设置内核名称)
         run: |
@@ -738,6 +755,7 @@ jobs:
           test -f out/.config || { echo "FATAL: out/.config 缺失"; exit 1; }
           grep -Eq '^CONFIG_PKGMASK=y$' out/.config || { echo "FATAL: CONFIG_PKGMASK 未生效"; exit 1; }
           grep -Eq '^CONFIG_PKGMASK_HWID=y$' out/.config || { echo "FATAL: CONFIG_PKGMASK_HWID 未生效"; exit 1; }
+          grep -Eq '^CONFIG_KSU_SUSFS=y$' out/.config || { echo "FATAL: CONFIG_KSU_SUSFS 未生效"; exit 1; }
           grep -Eq '^CONFIG_KPROBES=y$' out/.config || { echo "FATAL: CONFIG_KPROBES 未生效"; exit 1; }
           grep -Eq '^CONFIG_KRETPROBES=y$' out/.config || { echo "FATAL: CONFIG_KRETPROBES 未生效"; exit 1; }
           test -f out/vmlinux || { echo "FATAL: out/vmlinux 缺失"; exit 1; }
@@ -837,6 +855,26 @@ jobs:
         with:
           name: SUSFS-Env-Guard-${{ env.DEVICES_NAME }}
           path: SUSFS-Env-Guard-*.zip
+      - name: 📦 Build SUSFS KSU module (打包官方 SUSFS 管理器模块)
+        if: ${{ env.ENABLE_SUSFS == 'true' }}
+        run: |
+          set -euo pipefail
+          MODULE_SRC="${GITHUB_WORKSPACE}/module/susfs_ksu_module"
+          test -f "$MODULE_SRC/module.prop" || { echo "FATAL: susfs_ksu_module missing"; exit 1; }
+          MODULE_VERSION="$(sed -n 's/^version=//p' "$MODULE_SRC/module.prop" | head -n 1)"
+          test -n "$MODULE_VERSION" || { echo "FATAL: module version missing"; exit 1; }
+          OUT="SUSFS-KSU-Module-${MODULE_VERSION}"
+          rm -rf "$OUT" "${OUT}.zip"
+          cp -a "$MODULE_SRC" "$OUT"
+          (cd "$OUT" && zip -qr "../${OUT}.zip" .)
+          unzip -t "${OUT}.zip" >/dev/null
+          echo "module artifact: ${OUT}.zip"
+      - name: 📤 Upload SUSFS KSU module (上传官方 SUSFS 管理器模块)
+        if: ${{ env.ENABLE_SUSFS == 'true' }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: SUSFS-KSU-Module
+          path: SUSFS-KSU-Module-*.zip
   upload_rekernel:
     name: Upload Re-Kernel Module
     if: ${{ github.event.inputs.enable_ReKernel == 'true' }}
@@ -959,6 +997,10 @@ jobs:
             [ -f "$env_zip" ] || continue
             cp -f "$env_zip" "./release_assets/$(basename "$env_zip")"
           done < <(find ./release_assets -mindepth 2 -type f -name 'SUSFS-Env-Guard-*.zip' -print)
+          while IFS= read -r ksu_zip; do
+            [ -f "$ksu_zip" ] || continue
+            cp -f "$ksu_zip" "./release_assets/$(basename "$ksu_zip")"
+          done < <(find ./release_assets -mindepth 2 -type f -name 'SUSFS-KSU-Module-*.zip' -print)
           # 列出所有待上传的文件
           echo ""
           echo "=== 待上传到 Release 的文件 ==="
@@ -994,9 +1036,9 @@ jobs:
           fi
           FEATURES="${FEATURES}- ✅ ReSukiSU (KernelSU)"$'\n'
           if [ "${{ github.event.inputs.enable_susfs }}" = "true" ]; then
-            FEATURES="${FEATURES}- ✅ SUSFS 挂载支持"$'\n'
+            FEATURES="${FEATURES}- ✅ SUSFS 全功能 (官方原仓库最新版, 特征隐藏)"$'\n'
           fi
-          FEATURES="${FEATURES}- ✅ pkgmask v4.9 内核隐藏 + hwid_spoof 只读硬件ID拦截"$'\n'
+          FEATURES="${FEATURES}- ✅ pkgmask v4.11 内核包名/进程隐藏 + hwid_spoof 只读硬件ID拦截"$'\n'
           # 自定义内核后缀
           KERNEL_SUFFIX="${{ github.event.inputs.custom_kernel_suffix }}"
           if [ -z "$KERNEL_SUFFIX" ]; then
@@ -1040,7 +1082,7 @@ jobs:
           cat release_notes.md
           echo ""
           # 收集所有待上传的文件（仅 AK3 zip 和 Re-Kernel zip）
-          RELEASE_FILES=$(find ./release_assets -maxdepth 1 -type f \( -name 'AK3_*.zip' -o -name 'Re-Kernel-v*.zip' -o -name 'SUSFS-Env-Guard-*.zip' \) 2>/dev/null || true)
+          RELEASE_FILES=$(find ./release_assets -maxdepth 1 -type f \( -name 'AK3_*.zip' -o -name 'Re-Kernel-v*.zip' -o -name 'SUSFS-Env-Guard-*.zip' -o -name 'SUSFS-KSU-Module-*.zip' \) 2>/dev/null || true)
           if [ -z "$RELEASE_FILES" ]; then
             echo "::warning::没有找到待上传的发布文件"
             RELEASE_FILES=""
