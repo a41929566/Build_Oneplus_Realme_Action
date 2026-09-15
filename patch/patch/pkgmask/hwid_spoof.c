@@ -1,3 +1,4 @@
+/* Force rebuild - clear ccache 2026-09-15 */
 // SPDX-License-Identifier: GPL-2.0
 /*
  * hwid_spoof -- kernel-level read-only hardware ID spoofing (v1.0)
