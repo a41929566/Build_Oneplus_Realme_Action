@@ -20,4 +20,4 @@ fi
 sh "$MODDIR/tools/props_spoof.sh" apply > "$RUN_DIR/props_pfd.log" 2>&1
 
 # === 内核只读硬件 ID（built-in 节点此阶段已就绪）===
-sh "$MODDIR/tools/randomize.sh" apply > "$RUN_DIR/hwid_pfd.log" 2>&1
+# sh "$MODDIR/tools/randomize.sh" apply > "$RUN_DIR/hwid_pfd.log" 2>&1
