@@ -13,11 +13,23 @@ echo "=== service.sh start $(date) ===" > "$RUN_DIR/service.log"
 
 # 等待 /data 与系统就绪（android_id / pm / appops 需要 system_server）
 i=0
+i=0
 while [ "$(getprop sys.boot_completed)" != "1" ] && [ $i -lt 60 ]; do
     sleep 2; i=$((i+1))
 done
 sleep 5
 log 2 "boot_completed after ~$((i*2))s"
+
+# 额外等待 settings 和 appops 服务真正可用
+j=0
+while ! service check settings >/dev/null 2>&1 || ! service check appops >/dev/null 2>&1; do
+    sleep 2; j=$((j+1))
+    if [ $j -gt 30 ]; then
+        log 2 "Timeout waiting for settings/appops service"
+        break
+    fi
+done
+log 2 "system services ready"
 
 # 0) 属性伪装（延后到系统启动完成后执行，避免 zygote 前改属性导致重启）
 sh "$MODDIR/tools/props_spoof.sh" apply >> "$RUN_DIR/service.log" 2>&1
