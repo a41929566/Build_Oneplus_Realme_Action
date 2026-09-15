@@ -15,11 +15,7 @@ PROFILE="${DATA_DIR}/fake_profile.conf"
 ORIG="${BACKUP_DIR}/props_orig.conf"
 
 # 需要覆盖的“锁状态/root 痕迹”属性（期望值）
-LOCK_PROPS="ro.boot.verifiedbootstate=green
-ro.boot.vbmeta.device_state=locked
-ro.boot.flash.locked=1
-ro.boot.veritymode=enforcing
-ro.debuggable=0
+LOCK_PROPS="ro.debuggable=0
 ro.secure=1
 ro.adb.secure=1
 sys.oem_unlock_allowed=0
