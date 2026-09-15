@@ -82,12 +82,14 @@ apply_kernel_hwid() {
     local uids
     uids=$(get_config hwid_uids "")
     # 作用域：默认全局（空）。可在 conf 配 hwid_uids=10123,10124 仅对特定 app
-    write_node hwid_uids "$uids" || return 1
-    write_node hwid_soc_serial "$fake_soc" || return 1
-    write_node hwid_cid "$fake_cid" || return 1
-    write_node hwid_wlan_mac "$fake_wmac" || return 1
-    write_node hwid_bt_mac "$fake_bmac" || return 1
-    write_node hwid_cpu_serial "$fake_cpu" || return 1
+        write_node hwid_uids "$uids"          || log 0 "WARN: hwid_uids write failed"
+    write_node hwid_soc_serial "$fake_soc"  || log 0 "WARN: hwid_soc_serial write failed"
+    write_node hwid_cid "$fake_cid"         || log 0 "WARN: hwid_cid write failed"
+    write_node hwid_wlan_mac "$fake_wmac"   || log 0 "WARN: hwid_wlan_mac write failed"
+    write_node hwid_bt_mac "$fake_bmac"     || log 0 "WARN: hwid_bt_mac write failed"
+    write_node hwid_cpu_serial "$fake_cpu"  || log 0 "WARN: hwid_cpu_serial write failed"
+
+    # 核心操作必须执行
     write_node hwid_reload 1 || return 1
     write_node hwid_enabled 1 || return 1
     bool_on "$(cat "$HW_DIR/hwid_enabled" 2>/dev/null)" || return 1
