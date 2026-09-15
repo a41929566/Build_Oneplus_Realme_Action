@@ -1,7 +1,7 @@
 #!/system/bin/sh
-# SUSFS环境守护 v6.3 - post-fs-data.sh（zygote 启动前执行，最关键时机）
-# 所有 ro.* 属性伪装必须在此完成，使 app 从 zygote fork 时 JVM 固化值即为假值，
-# 从而 JVM / getprop / native PropertyUtil 三通道一致（Maple 交叉比对才不会暴露）。
+# SUSFS环境守护 v6.3 - post-fs-data.sh（zygote 启动前执行）
+# 只做最基础的文件准备，所有属性/内核操作延后到 service.sh
+# 避免在 zygote 前修改任何属性，导致系统启动完整性校验失败
 MODDIR=${0%/*}
 . "$MODDIR/tools/lib_common.sh"
 
@@ -16,8 +16,5 @@ if [ -f "$MODDIR/sepolicy.rule" ]; then
     "$MAGISKPOLICY" --apply "$MODDIR/sepolicy.rule" 2>/dev/null
 fi
 
-# === 属性伪装（必须在 zygote 前）===
-sh "$MODDIR/tools/props_spoof.sh" apply > "$RUN_DIR/props_pfd.log" 2>&1
-
-# === 内核只读硬件 ID（built-in 节点此阶段已就绪）===
-# sh "$MODDIR/tools/randomize.sh" apply > "$RUN_DIR/hwid_pfd.log" 2>&1
+# 所有属性伪装 / 内核 hwid / android_id 全部延后到 service.sh
+# 原因：zygote 启动前修改 ro.* 属性或挂 vfs_read kretprobe 都可能导致系统级重启
