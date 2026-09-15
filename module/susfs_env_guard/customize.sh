@@ -27,7 +27,17 @@ chmod 755 "$MODPATH/tools/"*.sh 2>/dev/null
 ui_print "- 生成基础目录与配置..."
 D=/data/adb/$MODID
 mkdir -p "$D/backup" "$D/logs" /data/adb/pkgmask
-[ -f "$D/spoof.conf" ] || cp -f "$MODPATH/config/spoof.conf.example" "$D/spoof.conf"
+
+# 强制覆盖 spoof.conf，确保本次刷入的安全配置生效
+# （旧版本用 [ -f ] || 判断，旧配置不会被覆盖，导致改了 spoof.conf.example 也无效）
+cp -f "$MODPATH/config/spoof.conf.example" "$D/spoof.conf"
+ui_print "- spoof.conf 已强制覆盖为最新安全配置"
+
+# 4) 备份旧的 fake_profile（如果存在），避免假值残留造成不一致
+if [ -f "$D/fake_profile.conf" ]; then
+    cp -f "$D/fake_profile.conf" "$D/fake_profile.conf.bak.$(date +%s)" 2>/dev/null
+    ui_print "- 旧 fake_profile.conf 已备份"
+fi
 
 # 5) 内核能力提示；具体功能仍由 selfcheck 在启动后确认
 if [ -d /sys/module/pkgmask/parameters ]; then
@@ -40,9 +50,6 @@ if [ -f /sys/module/pkgmask/parameters/hwid_enabled ]; then
 else
     ui_print "! hwid_spoof: missing (read-only ID interception unavailable)"
 fi
-
-# 6) 升级保留用户数据（不覆盖 fake_profile / backup / spoof.conf）
-ui_print "- 保留已有伪装档案与备份"
 
 ui_print "=========================================="
 ui_print "  安装完成，重启后生效"
