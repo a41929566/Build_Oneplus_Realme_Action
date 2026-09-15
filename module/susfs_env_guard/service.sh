@@ -1,7 +1,7 @@
 #!/system/bin/sh
 # SUSFS环境守护 v6.3 - service.sh（late_start service 阶段）
-# 注意：ro.* 属性伪装已全部前移到 post-fs-data.sh，这里不再 resetprop，
-#       避免 zygote 已固化真值后再改导致 JVM/getprop 三通道不一致。
+# 所有属性伪装 + 内核 hwid + android_id 全部在此阶段执行（系统启动完成后）
+# 避免在 post-fs-data（zygote 前）修改 ro.* 属性或挂 vfs_read hook 导致系统重启
 MODDIR=${0%/*}
 . "$MODDIR/tools/lib_common.sh"
 
@@ -16,16 +16,19 @@ i=0
 while [ "$(getprop sys.boot_completed)" != "1" ] && [ $i -lt 60 ]; do
     sleep 2; i=$((i+1))
 done
-sleep 3
+sleep 5
 log 2 "boot_completed after ~$((i*2))s"
 
-# 1) 硬件层 android_id（settings 需 system_server，只能在此）+ 复核内核 hwid
+# 0) 属性伪装（延后到系统启动完成后执行，避免 zygote 前改属性导致重启）
+sh "$MODDIR/tools/props_spoof.sh" apply >> "$RUN_DIR/service.log" 2>&1
+
+# 1) 硬件层 android_id（settings 需 system_server，只能在此）+ 内核 hwid
 sh "$MODDIR/tools/randomize.sh" apply >> "$RUN_DIR/service.log" 2>&1
 
 # 2) pkgmask 真 sysfs 配置（需要 pm 取 uid，故放此阶段）
 sh "$MODDIR/tools/pkgmask_setup.sh" apply >> "$RUN_DIR/service.log" 2>&1
 
-# 3) AppOps 撤销检测方“查询应用列表”
+# 3) AppOps 撤销检测方"查询应用列表"
 sh "$MODDIR/tools/appops_setup.sh" apply >> "$RUN_DIR/service.log" 2>&1
 
 # 4) 启动守护进程（单实例，setsid 脱离）
@@ -39,7 +42,7 @@ fi
 sleep 1
 setsid sh "$MODDIR/tools/daemon_loop.sh" >> "$RUN_DIR/daemon.boot.log" 2>&1 &
 
-# 5) 初次自检（守护进程启动后再检查，避免误报“未运行”）
+# 5) 初次自检（守护进程启动后再检查，避免误报"未运行"）
 sleep 1
 sh "$MODDIR/tools/selfcheck.sh" > "$RUN_DIR/first_selfcheck.txt" 2>&1
 
