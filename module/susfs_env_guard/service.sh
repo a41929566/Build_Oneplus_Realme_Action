@@ -13,7 +13,6 @@ echo "=== service.sh start $(date) ===" > "$RUN_DIR/service.log"
 
 # 等待 /data 与系统就绪（android_id / pm / appops 需要 system_server）
 i=0
-i=0
 while [ "$(getprop sys.boot_completed)" != "1" ] && [ $i -lt 60 ]; do
     sleep 2; i=$((i+1))
 done
