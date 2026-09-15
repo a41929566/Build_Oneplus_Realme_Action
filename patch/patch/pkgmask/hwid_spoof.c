@@ -77,7 +77,6 @@
 #include <linux/version.h>
 
 #if defined(CONFIG_ARM64)
-#error "hwid_spoof: REAL branch active"
 #define HW_LOG_PREFIX "hwid_spoof: "
 #define HWID_MAX_BYTES   16384
 #define HWID_UID_MAX     128
