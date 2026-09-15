@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * pkgmask v4.9 -- kernel-level app package / directory hiding
+ * pkgmask v4.11 -- kernel-level app package / directory hiding
  *
  * Why built-in: the hiding entry point for readdir is a strong
  * definition of pmk_filter_dirent() that overrides the __weak default
@@ -9,10 +9,11 @@
  * which is why this driver is built-in and not an LKM.
  *
  * v4.6 changes (stable):
- *   - binder.c injection is DISABLED by default (BINDER_INJECT=False
- *     in the workflow, binder_enabled=0 here).  Binder filter code is
- *     kept only as inert parameters so the WebUI keeps working; no
- *     binder_transaction code path is touched, no crash surface.
+ *   - v4.11: binder.c injection and syscall-fallback code are FULLY
+ *     removed (no inert params, no sysfs exposure, no kallsyms entries).
+ *     Only readdir weak-hook + inode_permission/vfs_getattr kretprobes
+ *     remain, minimizing detection surface.  hwid_spoof (read-only HWID
+ *     interception) is preserved and initialized here.
  *   - readdir hiding via filldir64/filldir weak hook (zero-width
  *     immune, matches by parent dir (dev,ino) + entry name).
  *   - stat / open hiding via inode_permission + vfs_getattr kretprobes.
@@ -53,7 +54,6 @@
 #include <linux/kallsyms.h>
 #include <linux/string.h>
 #include <linux/statfs.h>
-#include <linux/syscalls.h>
 #include <linux/fdtable.h>
 #include <linux/version.h>
 #include <linux/magic.h>
@@ -62,10 +62,8 @@
 #include <linux/mm.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
-
 #include "hwid_spoof.h"
 
-extern int close_fd(unsigned int fd);
 
 #define PM_LOG_PREFIX "pkgmask: "
 #define MAX_HIDE_TARGETS 64
@@ -74,7 +72,6 @@ extern int close_fd(unsigned int fd);
 #define MAX_DENY_UIDS 128
 #define MAX_ALLOW_UIDS 128
 #define UID_LIST_LEN 1024
-#define PM_SYSCALL_HOOKS_LEN 512
 
 /* --------------------------- tunables --------------------------- */
 
@@ -94,9 +91,6 @@ static bool hook_getattr;
 module_param(hook_getattr, bool, 0600);
 MODULE_PARM_DESC(hook_getattr, "Enable vfs_getattr hook");
 
-static bool enable_syscall_hooks;
-module_param(enable_syscall_hooks, bool, 0600);
-MODULE_PARM_DESC(enable_syscall_hooks, "Enable syscall fallback hooks (off by default)");
 
 static char scope_mode[16] = "deny";
 module_param_string(scope_mode, scope_mode, sizeof(scope_mode), 0600);
@@ -114,9 +108,6 @@ static char target_paths[TARGET_PATHS_LEN];
 module_param_string(target_paths, target_paths, sizeof(target_paths), 0600);
 MODULE_PARM_DESC(target_paths, "Comma-separated absolute paths to hide");
 
-static char syscall_hooks[PM_SYSCALL_HOOKS_LEN];
-module_param_string(syscall_hooks, syscall_hooks, sizeof(syscall_hooks), 0600);
-MODULE_PARM_DESC(syscall_hooks, "Comma-separated syscall fallback subset");
 
 /* SUSFS guard compatible: /proc process-name hiding (v4.9) */
 static bool hide_proc_enabled;
@@ -131,17 +122,6 @@ static unsigned int proc_name_count;
 module_param_string(hide_proc_names, hide_proc_names_buf,
 		    sizeof(hide_proc_names_buf), 0600);
 MODULE_PARM_DESC(hide_proc_names, "Comma-separated process names to hide in /proc");
-
-/* Binder params kept for WebUI compatibility (v4.6: inert, no binder.c hook) */
-static char binder_hide_packages[1024];
-module_param_string(binder_hide_packages, binder_hide_packages,
-		    sizeof(binder_hide_packages), 0600);
-MODULE_PARM_DESC(binder_hide_packages,
-		 "Comma-separated package names (reserved, inert in v4.6)");
-
-static bool binder_enabled;
-module_param(binder_enabled, bool, 0600);
-MODULE_PARM_DESC(binder_enabled, "Binder scrubbing master toggle (reserved, off)");
 
 /* --------------------------- state --------------------------- */
 
@@ -403,12 +383,6 @@ static void unregister_perm_getattr_hooks(void)
 	memset(&getattr_kp, 0, sizeof(getattr_kp));
 }
 
-/* --------------------------- syscall fallback (removed in v4.6) --------------------------- */
-/*
- * v4.6: syscall fallback hooks are intentionally NOT registered.
- * The params enable_syscall_hooks / syscall_hooks are kept only so the
- * WebUI keeps writing them without error; they control nothing.
- */
 
 /* --------------------------- target resolution --------------------------- */
 
@@ -701,7 +675,6 @@ static int apply_config(void)
 		scope_mode, target_count, deny_uid_count, allow_uid_count,
 		hide_dirents ? 1 : 0, hook_getdents ? 1 : 0,
 		hook_perm ? 1 : 0, hook_getattr ? 1 : 0,
-		enable_syscall_hooks ? 1 : 0, binder_enabled ? 1 : 0,
 		hide_proc_enabled ? 1 : 0, proc_name_count);
 	return 0;
 }
@@ -733,15 +706,13 @@ module_param_cb(reload, &reload_ops, NULL, 0600);
 static int status_get(char *buffer, const struct kernel_param *kp)
 {
 	return scnprintf(buffer, PAGE_SIZE,
-			 "pkgmask v4.9\n"
+			 "pkgmask v4.11\n"
 			 "scope=%s targets=%u deny=%u allow=%u\n"
 			 "hide_dirents=%d hook_getdents=%d hook_perm=%d hook_getattr=%d\n"
-			 "syscall_hooks=%d binder_enabled=%d (inert)\n"
 			 "hide_proc_enabled=%d proc_names=%u\n",
 			 scope_mode, target_count, deny_uid_count, allow_uid_count,
 			 hide_dirents ? 1 : 0, hook_getdents ? 1 : 0,
 			 hook_perm ? 1 : 0, hook_getattr ? 1 : 0,
-			 enable_syscall_hooks ? 1 : 0, binder_enabled ? 1 : 0,
 			 hide_proc_enabled ? 1 : 0, proc_name_count);
 }
 
@@ -760,11 +731,9 @@ static int __init pkgmask_init(void)
 	if (ret)
 		pr_info(PM_LOG_PREFIX "initial perm/getattr hooks skipped (%d)\n", ret);
 
-	/* read-only hardware ID spoof (soc serial / cpuinfo / cid / mac).
-	 * Non-fatal: if its probe cannot register it simply stays idle. */
 	hwid_spoof_init();
 
-	pr_info(PM_LOG_PREFIX "v4.9 built-in initialized (nothing hidden until configured)\n");
+	pr_info(PM_LOG_PREFIX "v4.11 built-in initialized (nothing hidden until configured)\n");
 	return 0;
 }
 
@@ -780,4 +749,4 @@ module_exit(pkgmask_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("pkgmask");
-MODULE_DESCRIPTION("pkgmask v4.9 kernel-level package hiding (built-in)");
+MODULE_DESCRIPTION("pkgmask v4.11 kernel-level package hiding (built-in)");
