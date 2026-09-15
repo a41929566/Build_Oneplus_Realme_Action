@@ -76,8 +76,7 @@
 #include <linux/random.h>
 #include <linux/version.h>
 
-#if defined(CONFIG_ARM64) && IS_ENABLED(CONFIG_PKGMASK_HWID)
-
+#if defined(CONFIG_ARM64)
 #define HW_LOG_PREFIX "hwid_spoof: "
 #define HWID_MAX_BYTES   16384
 #define HWID_UID_MAX     128
