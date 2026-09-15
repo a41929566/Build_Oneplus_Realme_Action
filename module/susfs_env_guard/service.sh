@@ -32,7 +32,7 @@ done
 log 2 "system services ready"
 
 # 0) 属性伪装（延后到系统启动完成后执行，避免 zygote 前改属性导致重启）
-sh "$MODDIR/tools/props_spoof.sh" apply >> "$RUN_DIR/service.log" 2>&1
+# sh "$MODDIR/tools/props_spoof.sh" apply >> "$RUN_DIR/service.log" 2>&1
 
 # 1) 硬件层 android_id（settings 需 system_server，只能在此）+ 内核 hwid
 sh "$MODDIR/tools/randomize.sh" apply >> "$RUN_DIR/service.log" 2>&1
