@@ -1,65 +1,65 @@
-name: Build_oneplus_sm8750_pkgmask
-permissions:
-  contents: read
-  actions: write
-on:
-  workflow_dispatch:
-    inputs:
-      enable_release:
-        description: "发布到 Releases"
-        required: true
-        default: true
-        type: boolean
-      device_name:
-        description: "📝请选择要编译的机型："
-        required: true
-        type: choice
-        options:
-          - 'oneplus_13'
-          - 'oneplus_ace5_pro'
-          - 'oneplus_ace_6'
-          - 'oneplus_13t'
-          - 'oneplus_pad_2'
-          - 'oneplus_pad_2_pro'
+：构建oneplus_sm8750_pkgmask
+权限:
+: 读取
+操作: 写入
+启用:
+  工作流触发:
+    输入:
+      启用版本:
+        描述: "发布到 Releases"
+        必填: 是
+        默认值: 是
+        类型: 布尔值
+      设备名称:
+        描述: "请选择要编译的机型："
+        必需: 真
+        类型: 选项
+        选项:
+          - '一加13'
+          - “一加Ace5 Pro”
+          - '一加Ace6'
+          - '一加13T'
+          - '一加Pad2'
+          - '一加Pad2 Pro'
           - 'oneplus_ace5_ultra'
           - 'realme_GT7'
           - 'realme_GT7pro'
           - 'realme_GT7pro_Speed'
           - 'realme_GT8'
-        default: 'oneplus_ace5_pro'
+: 'oneplus_ace5_pro'
       custom_kernel_suffix:
-        description: "✏️ 自定义内核名称- (-开头 留空则默认官方）"
+        描述: "✏️ 自定义内核名称- (-开头 留空则默认官方）"
         required: false
         default: ''
       custom_kernel_time:
-        description: "⏰ 自定义构建时间- (英文时间字符串格式 留空则默认官方）"
+        描述: "⏰ 自定义构建时间- (英文时间字符串格式 留空则默认官方）"
         required: false
         default: ''
       enable_susfs:
-        description: "启用SUSFS"
-        required: true
-        default: true
-        type: boolean
-      enable_droidspaces:
+: "启用SUSFS"
+: true
+: true
+: 布尔值
+      启用_droidspaces:
         description: "添加 Droidspaces 容器支持"
-        required: true
+: true
         default: false
-        type: boolean
-      enable_ReKernel:
+: 布尔值
+:
         description: "添加Re-Kernel支持"
-        required: true
+        必填: 是
         default: false
-        type: boolean
-      enable_Adios:
+        类型: 布尔值
+      启用_Adios:
         description: "添加ADIOS IO调度器支持"
-        required: true
-        default: true
-        type: boolean
-      enable_scx:
-        description: "添加完美风驰"
-        required: true
-        default: true
-        type: boolean
+        必填: 是
+        默认值: 是
+        类型: 布尔值
+      启用_scx:
+        描述: "添加完美风驰"
+        必填: 是
+        默认值: 是
+        类型: 布尔值
       enable_bbg:
         description: "添加BBG基带守护"
         required: true
@@ -370,7 +370,7 @@ jobs:
           
           mkdir -p "$CCACHE_DIR"
           
-          echo "配置 ccache 缓存大小为：$CCACHE_MAXSIZE"
+          echo “配置 ccache 缓存大小为：$CCACHE_MAXSIZE”
           ccache -M "$CCACHE_MAXSIZE"
           ccache -o compression=true
           
@@ -590,13 +590,18 @@ jobs:
           cd ./common
           patch -p1 < 50_add_susfs_in_gki-android15-6.6.patch || true
           patch -p1 -N -F 3 < 69_hide_stuff.patch || true
-          if patch -p1 -N -F 3 < ${{ github.workspace }}/patch/patch/susfs_stealth.patch; then
-            echo "[OK] SUSFS stealth patch applied"
-            grep -q "ksdcardd" fs/susfs.c && echo "[OK] Verified: susfs_sdcard_monitor renamed to ksdcardd" || echo "[WARN] Rename verification failed"
-          else
-            echo "[WARN] SUSFS stealth patch FAILED to apply - stealth features will not be available"
-          fi
+          # SUSFS stealth: 直接用 sed 替换（比 patch 更可靠，不受上游源码变动影响）
+          echo "[INFO] Applying SUSFS stealth via sed..."
+          sed -i 's/"susfs_sdcard_monitor"/"ksdcardd"/g' fs/susfs.c
+          sed -i 's/failed to create thread susfs_sdcard_monitor/failed to create thread ksdcardd/g' fs/susfs.c
+          sed -i 's/pr_info("susfs:\[/pr_info("fs:[/g' fs/susfs.c
+          sed -i 's/pr_err("susfs:\[/pr_err("fs:[/g' fs/susfs.c
+          sed -i 's/"susfs is initialized! version: "/"fs stealth initialized\\n"/g' fs/susfs.c
+          sed -i 's/#define SUSFS_VERSION "v[0-9.]*"/#define SUSFS_VERSION "0"/g' include/linux/susfs.h
+          echo "[OK] SUSFS stealth applied via sed"
+          grep -q "ksdcardd" fs/susfs.c && echo "[OK] Verified: susfs_sdcard_monitor renamed to ksdcardd" || echo "[WARN] Rename verification failed"
           echo "[OK] SUSFS 补丁处理流程全部完成"
+          
       - name: 🔧 Set gki_defconfig (设置编译配置) 
         run: |
           cd kernel_workspace
