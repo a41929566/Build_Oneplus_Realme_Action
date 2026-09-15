@@ -7,7 +7,7 @@ MODDIR=${0%/*}
 
 mkdir -p "$DATA_DIR" "$BACKUP_DIR" "$DATA_DIR/logs" "$RUN_DIR"
 
-# 首次安装生成默认配置
+# 首次安装生成默认配置（正常情况 customize.sh 已覆盖，这里只兜底）
 [ -f "$CONF" ] || cp -f "$MODDIR/config/spoof.conf.example" "$CONF"
 init_feature_flags
 
