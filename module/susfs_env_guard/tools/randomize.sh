@@ -118,12 +118,10 @@ do_apply() {
     local aid_rc=0
     if [ "$aid_on" = "1" ]; then
         apply_android_id || aid_rc=$?
-        [ "$aid_rc" = 1 ] && {
-            printf '%s\n' rolled-back > "$STATE_FILE"
-            do_restore
-            printf '%s\n' rolled-back > "$STATE_FILE"
-            return 1
-        }
+    if [ "$aid_rc" = 1 ]; then
+                log 0 "WARN: android_id apply failed, not rolling back kernel hwid"
+                aid_rc=2
+    fi
     fi
 
     # B) 内核只读 ID（优先内核 hwid_spoof；不支持时回退到用户态 bind mount）
