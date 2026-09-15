@@ -11,10 +11,19 @@
 
 . "${0%/*}/lib_common.sh"
 
+# ---------- 安全兜底：确保 resetprop 可用（防 lib_common.sh 缺失） ----------
+if ! command -v rp_set >/dev/null 2>&1; then
+    rp_set() { resetprop -n "$1" "$2" 2>/dev/null || setprop "$1" "$2" 2>/dev/null; }
+fi
+if ! command -v rp_del >/dev/null 2>&1; then
+    rp_del() { resetprop --delete "$1" 2>/dev/null || setprop "$1" "" 2>/dev/null; }
+fi
+
 PROFILE="${DATA_DIR}/fake_profile.conf"
 ORIG="${BACKUP_DIR}/props_orig.conf"
 
 # 需要覆盖的“锁状态/root 痕迹”属性（期望值）
+# 新增了 verifiedbootstate、flash.locked 等锁状态属性
 LOCK_PROPS="ro.debuggable=0
 ro.secure=1
 ro.adb.secure=1
@@ -22,7 +31,11 @@ sys.oem_unlock_allowed=0
 ro.build.tags=release-keys
 ro.build.type=user
 ro.build.selinux=1
-init.svc.adbd=stopped"
+init.svc.adbd=stopped
+ro.boot.verifiedbootstate=green
+ro.boot.flash.locked=1
+ro.secureboot.lockstate=locked
+ro.boot.vbmeta.device_state=locked"
 
 # fingerprint 各分区位置（值都按同一规则替换 incremental 段）
 FP_PROPS="ro.build.fingerprint
@@ -35,7 +48,11 @@ ro.bootimage.build.fingerprint"
 
 # ---------- 备份原始值（仅一次，绝不覆盖真值；全量备份，含锁状态，便于一键还原与对照） ----------
 backup_orig() {
-    [ -f "$ORIG" ] && return 0
+    # 如果已有备份，但备份里缺少 verifiedbootstate，说明是旧版备份，强制重新备份
+    if [ -f "$ORIG" ]; then
+        grep -q "ro.boot.verifiedbootstate" "$ORIG" && return 0
+        rm -f "$ORIG"
+    fi
     {
         # 锁状态原始值也完整留档
         echo "$LOCK_PROPS" | while IFS='=' read -r p v; do
