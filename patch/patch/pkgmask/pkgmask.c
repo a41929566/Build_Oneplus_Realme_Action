@@ -177,27 +177,7 @@ static bool is_in_uid_list(const uid_t *list, unsigned int count, uid_t uid)
 			return true;
 	return false;
 }
-/* 向上追溯 depth 层 real_parent，检查祖先链上是否有 deny_uids 里的 UID */
-static bool has_deny_ancestor(int depth)
-{
-    struct task_struct *task = current;
-    int i;
-    if (active_scope != SCOPE_DENY) return false;
-    rcu_read_lock();
-    for (i = 0; i < depth && task->real_parent; i++) {
-        task = task->real_parent;
-        if (task->pid == 1) break;
-        {
-            uid_t uid = from_kuid(&init_user_ns, task_uid(task));
-            if (is_in_uid_list(deny_uid_list, deny_uid_count, uid)) {
-                rcu_read_unlock();
-                return true;
-            }
-        }
-    }
-    rcu_read_unlock();
-    return false;
-}
+
 /*
  * 向上追溯 depth 层 real_parent，检查祖先链上是否有 deny_uids 里的 UID
  * 场景：检测方 su 后，root shell 的祖先仍可追溯到检测方进程
@@ -209,35 +189,52 @@ static bool has_deny_ancestor(int depth)
  *   3) 能挡住"检测方直接 su"的场景，这也是绝大多数检测工具的手法
  */
 
-static bool should_hide_for_current(void)
+static bool has_deny_ancestor(int depth)
+{
+	struct task_struct *task = current;
+	int i;
+	if (active_scope != SCOPE_DENY)
+		return false;
+	rcu_read_lock();
+	for (i = 0; i < depth && task->real_parent; i++) {
+		task = task->real_parent;
+		if (task->pid == 1)
+			break;
+		{
+			uid_t uid = from_kuid(&init_user_ns, task_uid(task));
+			if (is_in_uid_list(deny_uid_list, deny_uid_count, uid)) {
+				rcu_read_unlock();
+				return true;
+			}
+		}
+	}
+	rcu_read_unlock();
+	return false;
+}
+
 static bool should_hide_for_current(void)
 {
-    uid_t uid;
-    kuid_t kuid;
+	uid_t uid;
+	kuid_t kuid;
 
-    if (active_scope == SCOPE_GLOBAL)
-        return true;
+	if (active_scope == SCOPE_GLOBAL)
+		return true;
 
-    kuid = current_uid();
-    uid = from_kuid(&init_user_ns, kuid);
+	kuid = current_uid();
+	uid = from_kuid(&init_user_ns, kuid);
 
-    if (active_scope == SCOPE_DENY) {
-        /* 快路径：直接命中 deny_uids（普通 APP 走这里，零开销） */
-        if (is_in_uid_list(deny_uid_list, deny_uid_count, uid))
-            return true;
+	if (active_scope == SCOPE_DENY) {
+		/* 快路径：直接命中 deny_uids（普通 APP 走这里，零开销） */
+		if (is_in_uid_list(deny_uid_list, deny_uid_count, uid))
+			return true;
 
-        /* 慢路径：仅在 hook_perm/hook_getattr 开启时才追溯祖先，层数 3 */
-        if (hook_perm || hook_getattr) {
-            if (has_deny_ancestor(3))
-                return true;
-        }
-        return false;
-    }
-
-    if (active_scope == SCOPE_ALLOW)
-        return !is_in_uid_list(allow_uid_list, allow_uid_count, uid);
-    return false;
-}
+		/* 慢路径：仅在 hook_perm/hook_getattr 开启时才追溯祖先，层数 3 */
+		if (hook_perm || hook_getattr) {
+			if (has_deny_ancestor(3))
+				return true;
+		}
+		return false;
+	}
 
 	if (active_scope == SCOPE_ALLOW)
 		return !is_in_uid_list(allow_uid_list, allow_uid_count, uid);
