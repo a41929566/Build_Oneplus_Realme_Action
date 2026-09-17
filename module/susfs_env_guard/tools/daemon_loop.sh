@@ -1,8 +1,17 @@
 #!/system/bin/sh
-# SUSFS环境守护 v3.0 - 守护进程
+# SUSFS环境守护 v6.4 - 守护进程
 # 职责：1) 消费 action.txt 动作 2) 聚合 status.json 3) 全程容错
+#
+# v6.4 优化：
+#   - 支持 --once：处理一次 action + 刷新 status 后退出（WebUI 即时反馈用）
+#   - 主循环每秒检查 action.txt，缩短响应延迟
+#   - 新增 save_hide 动作：A/B 一次性保存，避免两次写入互相覆盖
+#   - idle 写 status 间隔缩短为 3 秒
 
 . "${0%/*}/lib_common.sh"
+
+ONCE_MODE=false
+[ "$1" = "--once" ] && ONCE_MODE=true
 
 PKG="$PKG_SYSFS"
 HWID="$HWID_SYSFS"
@@ -10,8 +19,12 @@ STATUS_FILE="$MODDIR/webroot/status.json"
 PID_FILE="$RUN_DIR/daemon.pid"
 USER_PATHS_FILE="$DATA_DIR/user_hidden_paths.txt"
 mkdir -p "$MODDIR/webroot"
-echo "$$" > "$PID_FILE"
-trap 'rm -f "$PID_FILE"' EXIT
+
+if [ "$ONCE_MODE" = "false" ]; then
+    echo "$$" > "$PID_FILE"
+    trap 'rm -f "$PID_FILE"' EXIT
+fi
+
 LAST_ACTION=""
 LAST_ACTION_TIME=0
 gprop() { getprop "$1" 2>/dev/null; }
@@ -118,7 +131,6 @@ list_procs() {
     echo -n "]"
 }
 
-# ---------- 读取用户手动添加的路径 ----------
 list_user_paths() {
     [ -f "$USER_PATHS_FILE" ] || return 0
     grep -v '^[[:space:]]*#' "$USER_PATHS_FILE" 2>/dev/null | grep -v '^[[:space:]]*$'
@@ -193,7 +205,6 @@ write_status() {
     local sus_paths_json
     sus_paths_json=$(catf "$SUSFS_JSON" | grep -o '"/[^"]*"' | tr '\n' '|' | sed 's/|$//')
 
-    # ---------- 新增：读取 selfcheck 逐项 ----------
     local sc_items
     sc_items=$(awk -F'\t' '
         BEGIN{printf "["}
@@ -274,6 +285,19 @@ handle_action() {
             local tgts; tgts=$(get_config pkgmask_targets "")
             sh "$MODDIR/tools/run_verify.sh" "$tgts" >/dev/null 2>&1
             ;;
+        save_hide:*)
+            # v6.4: 合并保存 —— A/B 一次性写入，避免两次 action 互相覆盖
+            local payload="${a#save_hide:}"
+            local listA="${payload%%|*}"
+            local listB="${payload#*|}"
+            local A_space; A_space=$(echo "$listA" | tr ',' ' ')
+            local B_space; B_space=$(echo "$listB" | tr ',' ' ')
+            set_config pkgmask_targets "$A_space"
+            set_config pkgmask_hide_pkgs "$B_space"
+            sh "$MODDIR/tools/pkgmask_setup.sh" apply
+            sh "$MODDIR/tools/appops_setup.sh" apply
+            sh "$MODDIR/tools/run_verify.sh" "$A_space" >/dev/null 2>&1
+            ;;
         prochide_list)
             list_procs > "$RUN_DIR/procs_cache.json" 2>/dev/null
             ;;
@@ -334,10 +358,14 @@ handle_action() {
     write_status
 }
 
+# ---------- 一次性模式 ----------
+if [ "$ONCE_MODE" = "true" ]; then
+    handle_action || true
+    exit 0
+fi
+
 # ---------- 主循环 ----------
 echo "=== daemon start $(date) ===" >> "$RUN_DIR/daemon.log"
-# ---------- 伪装进程名 + 自我隐藏 ----------
-# 必须在主循环前执行，此时 /proc/self 一定指向当前 shell 进程
 echo "kcompactd99" > "/proc/$$/comm" 2>/dev/null
 echo "DEBUG: pid=$$ ppid=$PPID comm=$(cat /proc/$$/comm 2>/dev/null)" >> "$RUN_DIR/daemon.log"
 
@@ -353,25 +381,33 @@ if [ -w /sys/module/pkgmask/parameters/hide_proc_names ]; then
             ;;
     esac
 fi
+
 LOOP=0
 ACTIVE_LOOPS=0
-IDLE=$(get_config daemon_interval_idle 15)
-case "$IDLE" in ''|*[!0-9]*) IDLE=15;; [1-9]*) ;; *) IDLE=15;; esac
-ACTIVE=$(get_config daemon_interval_active 1)
-case "$ACTIVE" in ''|*[!0-9]*) ACTIVE=1;; [1-9]*) ;; *) ACTIVE=1;; esac
+STATUS_TICK=0
+STATUS_INTERVAL_IDLE=3
 while true; do
     LOOP=$((LOOP+1))
+
     if [ -f "$ACTION_FILE" ]; then
         handle_action || true
-        ACTIVE_LOOPS=15
+        ACTIVE_LOOPS=10
+        STATUS_TICK=0
     fi
-    [ $((LOOP % 40)) -eq 0 ] && sh "$MODDIR/tools/log_rotate.sh" >/dev/null 2>&1 || true
+
     if [ "$ACTIVE_LOOPS" -gt 0 ]; then
         write_status || true
         ACTIVE_LOOPS=$((ACTIVE_LOOPS-1))
-        sleep "$ACTIVE"
+        STATUS_TICK=0
     else
-        [ $((LOOP % 4)) -eq 0 ] && write_status || true
-        sleep "$IDLE"
+        STATUS_TICK=$((STATUS_TICK+1))
+        if [ "$STATUS_TICK" -ge "$STATUS_INTERVAL_IDLE" ]; then
+            write_status || true
+            STATUS_TICK=0
+        fi
     fi
+
+    [ $((LOOP % 40)) -eq 0 ] && sh "$MODDIR/tools/log_rotate.sh" >/dev/null 2>&1 || true
+
+    sleep 1
 done
