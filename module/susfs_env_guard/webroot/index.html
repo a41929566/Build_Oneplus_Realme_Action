@@ -52,13 +52,6 @@ h1{font-size:22px;font-weight:500;letter-spacing:.1px;margin-bottom:2px}
 .btn.danger{background:var(--errorContainer);color:var(--onErrorContainer)}
 .btnrow{display:flex;gap:8px}
 .btnrow .btn{flex:1}
-.switch{position:relative;width:50px;height:28px;flex:0 0 50px;cursor:pointer}
-.switch input{display:none}
-.slider{position:absolute;inset:0;background:var(--surfaceContainerHighest);border-radius:28px;transition:.2s}
-.slider::before{content:"";position:absolute;width:22px;height:22px;left:3px;top:3px;background:#fff;
-  border-radius:50%;transition:.2s;box-shadow:0 1px 3px rgba(0,0,0,.2)}
-.switch input:checked+.slider{background:var(--primary)}
-.switch input:checked+.slider::before{transform:translateX(22px)}
 .pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:500}
 .pill.ok{background:#c8f0d0;color:#0a4d21}
 .pill.bad{background:var(--errorContainer);color:var(--onErrorContainer)}
@@ -102,12 +95,7 @@ input:focus{border-color:var(--primary)}
   color:var(--surface);padding:10px 20px;border-radius:999px;font-size:13px;opacity:0;
   transition:.25s;pointer-events:none;z-index:200;max-width:90%}
 .toast.show{opacity:.95}
-.spin{display:inline-block;width:14px;height:14px;border:2px solid currentColor;
-  border-top-color:transparent;border-radius:50%;animation:sp .7s linear infinite;vertical-align:-2px;margin-right:6px}
-@keyframes sp{to{transform:rotate(360deg)}}
 .empty{color:var(--onSurfaceVariant);font-size:12px;text-align:center;padding:16px 0}
-
-/* ---------- 模态框（点击数字弹出）---------- */
 .modal{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:150;
   display:none;align-items:flex-end;justify-content:center;animation:fade .2s}
 .modal.show{display:flex}
@@ -144,7 +132,6 @@ input:focus{border-color:var(--primary)}
   <button class="tab" data-p="suspath">路径隐藏</button>
 </div>
 
-<!-- ============ Tab 1: SUSFS 修复 ============ -->
 <div class="page active" id="page-susfs">
   <div class="stat-grid">
     <div class="stat clickable" onclick="showSelfcheck('ok')">
@@ -171,7 +158,6 @@ input:focus{border-color:var(--primary)}
   <div class="hint">点击上方「通过/警告/失败」数字可查看详细列表。</div>
 </div>
 
-<!-- ============ Tab 2: ID 伪装 ============ -->
 <div class="page" id="page-id">
   <div class="card">
     <h3>内核拦截状态 <span class="tag" id="hwidTag">–</span></h3>
@@ -200,15 +186,14 @@ input:focus{border-color:var(--primary)}
   </div>
 </div>
 
-<!-- ============ Tab 3: 应用隐藏 ============ -->
 <div class="page" id="page-app">
   <div class="card">
-    <h3>① 检测方 A（对谁隐藏）</h3>
+    <h3>① 检测方 A（对谁隐藏） <span class="tag" id="countA">0</span></h3>
     <input type="search" id="searchA" placeholder="搜索包名…" oninput="renderPkgA()">
     <div class="list" id="listA"><div class="empty">加载中…</div></div>
   </div>
   <div class="card">
-    <h3>② 被隐藏对象 B</h3>
+    <h3>② 被隐藏对象 B <span class="tag" id="countB">0</span></h3>
     <input type="search" id="searchB" placeholder="搜索包名…" oninput="renderPkgB()">
     <div class="list" id="listB"><div class="empty">加载中…</div></div>
   </div>
@@ -227,7 +212,6 @@ input:focus{border-color:var(--primary)}
   </div>
 </div>
 
-<!-- ============ Tab 4: 进程隐藏 ============ -->
 <div class="page" id="page-proc">
   <div class="card">
     <h3>搜索进程</h3>
@@ -244,7 +228,6 @@ input:focus{border-color:var(--primary)}
   </div>
 </div>
 
-<!-- ============ Tab 5: 路径隐藏 ============ -->
 <div class="page" id="page-suspath">
   <div class="card">
     <h3>添加自定义路径</h3>
@@ -266,7 +249,6 @@ input:focus{border-color:var(--primary)}
 
 <div class="toast" id="toast"></div>
 
-<!-- ============ 模态框（点击数字弹出）============ -->
 <div class="modal" id="scModal" onclick="if(event.target===this)closeModal()">
   <div class="modal-box">
     <div class="modal-header">
@@ -282,6 +264,7 @@ input:focus{border-color:var(--primary)}
 <script>
 const ACTION_FILE = "/data/adb/susfs_env_guard/action.txt";
 const MOD = "/data/adb/modules/susfs_env_guard";
+const DAEMON = "/data/adb/modules/susfs_env_guard/tools/daemon_loop.sh";
 
 function bridge(){
   if(window.ksu && typeof window.ksu.exec==="function") return window.ksu;
@@ -304,11 +287,15 @@ async function shExec(cmd){
   }catch(e){ return ""; }
 }
 
+/* v3.1: act() 后立即触发一次 daemon --once，让 UI 尽快看到新状态 */
 async function act(action){
   await shExec(`echo "${action}" > ${ACTION_FILE}`);
+  shExec(`(sh ${DAEMON} --once >/dev/null 2>&1 &)`);
   toast("已下发："+action);
+  setTimeout(refresh, 300);
   setTimeout(refresh, 800);
-  setTimeout(refresh, 2500);
+  setTimeout(refresh, 2000);
+  setTimeout(refresh, 4000);
 }
 function toast(m){
   const t=document.getElementById("toast");
@@ -328,6 +315,8 @@ let allPkgs = null;
 let selA = new Set();
 let selB = new Set();
 let selIdApps = new Set();
+let selAInitialized = false;
+let selBInitialized = false;
 
 function setText(id, txt, cls){
   const e=document.getElementById(id); if(!e) return;
@@ -402,8 +391,19 @@ function render(){
   setText("pm_paths", pm.target_paths||"（空）");
   setText("pm_hg", pm.hook_getdents||"–", pm.hook_getdents==="1"?"ok":"bad");
   setText("pm_hd", pm.hide_dirents||"–", pm.hide_dirents==="1"?"ok":"bad");
-  if(pm.targets && selA.size===0) pm.targets.split(/\\s+/).forEach(x=>x&&selA.add(x));
-  if(pm.hide_pkgs && selB.size===0) pm.hide_pkgs.split(/\\s+/).forEach(x=>x&&selB.add(x));
+
+  /* v3.1: 只在首次渲染时从内核状态恢复 selA/selB，之后由用户手动管理，
+     避免用户主动清空后又被内核状态覆盖回来 */
+  if(!selAInitialized){
+    if(pm.targets) pm.targets.split(/\\s+/).forEach(x=>x&&selA.add(x));
+    selAInitialized = true;
+  }
+  if(!selBInitialized){
+    if(pm.hide_pkgs) pm.hide_pkgs.split(/\\s+/).forEach(x=>x&&selB.add(x));
+    selBInitialized = true;
+  }
+  document.getElementById("countA").textContent = selA.size;
+  document.getElementById("countB").textContent = selB.size;
   renderPkgA(); renderPkgB();
   renderVerify();
 
@@ -415,7 +415,6 @@ function render(){
   document.getElementById("liveTag").textContent = "运行中";
 }
 
-/* ============ 自检详情模态框 ============ */
 function showSelfcheck(type){
   if(!S || !S.selfcheck || !S.selfcheck.items){
     toast("暂无数据，请先重新检测");
@@ -440,7 +439,6 @@ function closeModal(){
   document.getElementById("scModal").classList.remove("show");
 }
 
-/* ============ ID 伪装 tab ============ */
 function renderIdApps(onlyRefreshSel){
   if(!allPkgs) return;
   const q = (document.getElementById("searchIdApp").value||"").toLowerCase();
@@ -457,7 +455,6 @@ function saveIdApps(){
   act("id_apps_set:"+list);
 }
 
-/* ============ 应用隐藏 tab ============ */
 function renderPkgA(){
   if(!allPkgs) return;
   const q=(document.getElementById("searchA").value||"").toLowerCase();
@@ -468,7 +465,10 @@ function renderPkgA(){
     return `<label class="item"><input type="checkbox" ${ck} onchange="toggleA('${p.packageName}',this.checked)"><span class="pn">${esc(p.packageName)}</span><span class="uid">${p.uid?"uid:"+p.uid:""}</span></label>`;
   }).join("") || '<div class="empty">无匹配</div>';
 }
-function toggleA(p,on){ on?selA.add(p):selA.delete(p); }
+function toggleA(p,on){
+  if(on) selA.add(p); else selA.delete(p);
+  document.getElementById("countA").textContent = selA.size;
+}
 
 function renderPkgB(){
   if(!allPkgs) return;
@@ -480,13 +480,16 @@ function renderPkgB(){
     return `<label class="item"><input type="checkbox" ${ck} onchange="toggleB('${p.packageName}',this.checked)"><span class="pn">${esc(p.packageName)}</span><span class="uid">${p.uid?"uid:"+p.uid:""}</span></label>`;
   }).join("") || '<div class="empty">无匹配</div>';
 }
-function toggleB(p,on){ on?selB.add(p):selB.delete(p); }
+function toggleB(p,on){
+  if(on) selB.add(p); else selB.delete(p);
+  document.getElementById("countB").textContent = selB.size;
+}
 
+/* v3.1: 合并保存，A/B 一次性下发，避免两次 action 互相覆盖 */
 function saveHide(){
-  const listA = [...selA].join(" ");
-  const listB = [...selB].join(" ");
-  act("targets_set:"+listA);
-  setTimeout(()=>act("hidepkgs_set:"+listB), 400);
+  const listA = [...selA].join(",");
+  const listB = [...selB].join(",");
+  act(`save_hide:${listA}|${listB}`);
 }
 
 function renderVerify(){
@@ -514,7 +517,6 @@ function renderVerify(){
   }).join("");
 }
 
-/* ============ 进程隐藏 tab ============ */
 function renderProcs(){
   const procs = S.procs||[];
   const q = (document.getElementById("searchProc").value||"").toLowerCase();
@@ -537,7 +539,6 @@ function toggleProc(comm,on){
   else act("prochide_del:"+comm);
 }
 
-/* ============ 路径隐藏 tab ============ */
 function renderSusPaths(){
   const sp = S.sus_path||{};
   const user = (sp.user||"").split("|").filter(Boolean);
@@ -575,7 +576,6 @@ function delSusPath(p){
   act("suspath_del:"+p);
 }
 
-/* ============ 状态刷新 ============ */
 async function refresh(){
   try{
     const r = await fetch("status.json?t="+Date.now());
