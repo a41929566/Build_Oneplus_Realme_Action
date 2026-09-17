@@ -1,0 +1,4 @@
+v1.0-stable
+日期：2026-09-17
+状态：所有功能正常开机
+包含：ReSukiSU + SUSFS + pkgmask + hwid_spoof + has_deny_ancestor(depth 3) + v4.13 lazy vfs_read kretprobe + BBG + ADIOS + SCX
