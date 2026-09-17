@@ -638,6 +638,15 @@ jobs:
           
           #Remove check_defconfig
           sudo sed -i 's/check_defconfig//' ./common/build.config.gki
+       - name: 🔧 Apply readdir weak hook (step 1)
+        run: |
+          cd kernel_workspace/common
+          cp "${GITHUB_WORKSPACE}/patch/patch/readdir.c" fs/readdir.c
+          # 校验：pkgmask 弱钩子必须在
+          grep -q 'iterate_dir_filter' fs/readdir.c || { echo "FATAL: readdir.c 缺 pkgmask 弱钩子"; exit 1; }
+          # 校验：SUSFS SUS_PATH 段必须在（合并版 readdir.c）
+          grep -q 'susfs_is_inode_sus_path' fs/readdir.c || { echo "FATAL: readdir.c 缺 SUSFS SUS_PATH 段"; exit 1; }
+          echo "[OK] readdir weak hook applied (step 1)"    
 
       - name: 🔧 Set Kernel name (设置内核名称)
         run: |
