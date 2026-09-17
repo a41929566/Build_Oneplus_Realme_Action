@@ -1,0 +1,158 @@
+# ============================================================
+#  SUSFS Env Guard v3.0 - 统一配置
+#  Author: a41929566
+#
+#  设计原则：
+#    ① 内核拦截优先（SUSFS cmdline_or_bootconfig / hwid_spoof / pkgmask）
+#    ② 属性兜底次选（只改非核心属性，开机 10 秒后执行）
+#    ③ 核心参数零接触（不改 ro.boot.* / ro.serialno / ro.build.fingerprint）
+#
+#  ⚠️ 修改配置后重启生效，或在 WebUI 点「一键应用」
+#  ⚠️ 严禁在 spoof.conf 里添加任何 ro.boot.* 属性（会导致无限重启）
+# ============================================================
+
+
+# ============================================================
+# ① 功能总开关（每个功能独立，互不影响）
+# ============================================================
+# SUSFS 属性伪装（锁状态 / root 痕迹）
+spoof_props_enabled=1
+
+# 硬件 ID 内核拦截（SoC / CID / cpuinfo / MAC）
+spoof_hwid_enabled=1
+
+# Android ID 伪装（Settings.Secure）
+spoof_android_id=0
+
+# pkgmask 应用隐藏（A 看不到 B）
+spoof_pkgmask_enabled=1
+
+# 内核级进程隐藏（不杀进程，只隐藏）
+spoof_process_hide_enabled=1
+
+
+# ============================================================
+# ② SUSFS 内核级伪装（Helper 风格）
+# ============================================================
+# 引导状态伪装走内核重定向，不碰任何属性
+SPOOF_BOOTCONFIG=1
+SPOOF_OPEN_REDIRECT=1
+
+# 伪装内容（内核重定向后的值）
+SPOOF_CMDLINE='androidboot.verifiedbootstate=green androidboot.vbmeta.device_state=locked androidboot.selinux=enforcing oplusboot.verifiedbootstate=green'
+
+# 属性三连（仅供内核重定向失效时兜底，正常情况用不到）
+SPOOF_PROP=1
+PROP_VBSTATE=green
+PROP_DEVICE_STATE=locked
+PROP_FLASH_LOCKED=1
+
+
+# ============================================================
+# ③ 硬件 ID 单项控制（默认关，交给内核 hwid_spoof 做 read(2) 拦截）
+# ============================================================
+# WiFi MAC 属性层伪装
+# ⚠️ 默认关闭：内核 hwid_spoof 已在 read(2) 层拦截 MAC，
+#    属性层再改反而可能导致属性与 sysfs 不一致，被一致性检测发现
+spoof_wifi_mac=0
+
+# 蓝牙 MAC 属性层伪装
+spoof_bt_mac=0
+
+# 硬件 ID 作用域（留空=对所有进程生效，逗号分隔 UID 可仅对特定应用）
+hwid_uids=""
+
+
+# ============================================================
+# ④ pkgmask 应用隐藏
+# ============================================================
+# 作用模式：deny=仅对检测方隐藏（推荐，最不易误伤）
+#           allow=只对白名单显示
+pkgmask_scope=deny
+
+
+# pkgmask 额外隐藏路径（逗号分隔，会追加到内核 target_paths）
+# 一般留空；pkgmask_setup.sh 已内置一批系统信号路径
+pkgmask_extra_paths=""
+
+
+# ============================================================
+# ⑤ 进程隐藏
+# ============================================================
+# 隐藏列表由 WebUI 写入 /data/adb/susfs_env_guard/hidden_procs.txt
+# 每行一个 comm，内核 pkgmask 的 hide_proc_names 节点读取
+
+
+# ============================================================
+# ⑥ SUSFS 辅助能力（减少检测点）
+# ============================================================
+# AVC 日志伪装：免疫 AVC 日志审计类检测
+SPOOF_AVC_LOG=1
+
+# 非 root 进程隐藏 sus 挂载：免疫 Mount 类检测
+SPOOF_HIDE_SUS_MNTS=1
+
+# /data/local/tmp 官方 stat 伪装
+SPOOF_KSTAT_TMP=1
+
+# 清理 /data/local/tmp 内残留工具文件
+CLEAN_TMP=1
+
+# 常用检测路径循环隐藏（/data/adb、su 路径等）
+SPOOF_PATH_HIDE=1
+
+# 递归隐藏 ksu/modules 子目录（0=关，递归会膨胀 sus_path 列表拖慢系统）
+RECURSIVE_HIDE=0
+
+# 自定义追加隐藏路径（空格分隔，存在才 add）
+PATH_HIDE_EXTRA=
+
+# 隐藏本模块目录（0=不隐藏，1=用 sus_path 隐藏）
+HIDE_MODULE_PATH=0
+
+
+# ============================================================
+# ⑦ 期望值（自检对比用，不影响伪装）
+# ============================================================
+# 自动从另一槽位 boot 镜像读取官方内核版本作为基线
+UNAME_FROM_SLOT=1
+
+# 留空 = 自动捕获；手动填则以此为准
+EXPECTED_UNAME=
+EXPECTED_COMPILER=
+EXPECTED_OSRELEASE=
+
+# 自动基线捕获
+AUTO_CAPTURE=1
+
+
+# ============================================================
+# ⑧ 运行时行为
+# ============================================================
+# 清理历史冗余（旧版 spoofauto 模块、sdcard 旧报告等）
+CLEANUP_LEGACY=1
+
+# 运行时自洁（清理 example/README 等安装冗余）
+CLEANUP_RUNTIME=1
+
+# 日志级别（0=error, 1=warn, 2=info, 3=debug）
+log_level=2
+
+# 日志文件大小上限（KB）
+log_max_kb=512
+
+# 守护循环间隔（秒）
+daemon_interval_idle=15
+daemon_interval_active=1
+
+
+# ============================================================
+# ⑨ 兼容旧版字段（保留，避免旧脚本读不到而报错）
+# ============================================================
+global_spoof_enabled=0
+spoof_serial=0
+spoof_build=0
+identity_consistency_guard=1
+hwid_userspace_fallback=0
+hwid_userspace_cpuinfo=0
+feature_flags_initialized=1

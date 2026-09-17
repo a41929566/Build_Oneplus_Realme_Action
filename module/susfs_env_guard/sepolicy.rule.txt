@@ -1,0 +1,24 @@
+# ===== 本模块：守护/工具运行所需（最小化） =====
+# 守护进程读取应用数据目录属主以解析 uid（stat）
+allow magisk app_data_file dir { read open getattr search }
+allow magisk app_data_file file { read open getattr }
+allow ksu app_data_file dir { read open getattr search }
+allow ksu app_data_file file { read open getattr }
+allow apd app_data_file dir { read open getattr search }
+allow apd app_data_file file { read open getattr }
+
+# ===== 内核 sysfs 节点写入（pkgmask / hwid_spoof） =====
+# 这些节点由内核模块 pkgmask 暴露，脚本需要写入来控制伪装
+allow magisk sysfs dir { read write open getattr search add_name }
+allow magisk sysfs file { read write open getattr }
+allow ksu sysfs dir { read write open getattr search add_name }
+allow ksu sysfs file { read write open getattr }
+allow apd sysfs dir { read write open getattr search add_name }
+allow apd sysfs file { read write open getattr }
+
+# ===== ksu_susfs 持久化配置读写（.susfs.json） =====
+allow magisk ksu_file file { read write open create getattr }
+allow ksu ksu_file file { read write open create getattr }
+allow magisk app_data_file file { create write }
+allow ksu app_data_file file { create write }
+allow apd app_data_file file { create write }
