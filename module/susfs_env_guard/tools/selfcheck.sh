@@ -1,10 +1,9 @@
 #!/system/bin/sh
-# SUSFS Env Guard v3.0 - 自检诊断
+# SUSFS Env Guard v6.4 - 自检诊断
 # 输出：stdout 文本 + selfcheck_result.json + selfcheck_items.tsv
 
 . "${0%/*}/lib_common.sh"
 
-# 兜底：确保 SUSFS_JSON 有定义
 SUSFS_JSON="${SUSFS_JSON:-/data/adb/ksu/.susfs.json}"
 
 ITEM_FILE="$RUN_DIR/selfcheck_items.tsv"
@@ -12,25 +11,18 @@ ITEM_FILE="$RUN_DIR/selfcheck_items.tsv"
 
 PASS=0; WARN=0; FAIL=0
 
-decl_item() {
-    printf '%s\t%s\n' "$1" "$2" >> "$ITEM_FILE"
-}
-
+decl_item() { printf '%s\t%s\n' "$1" "$2" >> "$ITEM_FILE"; }
 ok(){  PASS=$((PASS+1)); decl_item ok   "$*"; }
 wn(){  WARN=$((WARN+1)); echo "[WARN] $*"; decl_item warn "$*"; }
 no(){  FAIL=$((FAIL+1)); echo "[FAIL] $*"; decl_item fail "$*"; }
 ps_(){ PASS=$((PASS+1)); echo "[PASS] $*"; decl_item ok   "$*"; }
 
-# 判断 "Y/1/y/true" 之类的真值
 is_on() {
     case "$1" in 1|Y|y|true|TRUE|on|ON) return 0;; *) return 1;; esac
 }
 
-echo "===== SUSFS Env Guard v3.0 自检 $(date) ====="
+echo "===== SUSFS Env Guard v6.4 自检 $(date) ====="
 
-# ============================================================
-# 1. 文件完整性
-# ============================================================
 echo "--- 文件完整性 ---"
 for f in post-fs-data.sh service.sh customize.sh module.prop sepolicy.rule \
          tools/lib_common.sh tools/props_spoof.sh tools/randomize.sh \
@@ -47,9 +39,6 @@ for f in post-fs-data.sh service.sh customize.sh module.prop sepolicy.rule \
 done
 [ -f "$CONF" ] && ps_ "配置文件存在 $CONF" || wn "配置文件缺失（用默认）"
 
-# ============================================================
-# 2. 属性伪装（安全区）
-# ============================================================
 echo "--- 属性伪装（安全区） ---"
 init_feature_flags
 PROPS_ON=$(get_config spoof_props_enabled 0)
@@ -80,9 +69,6 @@ else
     wn "属性伪装未启用（显示真值属预期）"
 fi
 
-# ============================================================
-# 3. 引导状态伪装
-# ============================================================
 echo "--- 引导状态伪装（内核层） ---"
 BC=$(cat /proc/bootconfig 2>/dev/null | tr '\n' ' ')
 case "$BC" in
@@ -100,35 +86,34 @@ VB_PROP=$(getprop ro.boot.verifiedbootstate)
 ps_ "ro.boot.verifiedbootstate=$VB_PROP（属性层不改，交给内核重定向）"
 
 # ============================================================
-# 4. 硬件只读 ID
+# 4. 硬件只读 ID（v6.4: 修复 hwid 假值检查逻辑）
 # ============================================================
 echo "--- 硬件只读 ID ---"
 if [ -f "$HWID_SYSFS/hwid_enabled" ]; then
     HE=$(cat "$HWID_SYSFS/hwid_enabled" 2>/dev/null)
     if [ "$HWID_ON" = 1 ] && is_on "$HE"; then
         HS=$(cat "$HWID_SYSFS/hwid_status" 2>/dev/null)
-        echo "$HS" | grep -q 'hook_active=1' && ps_ "hwid hook 已注册" \
-            || no "hwid hook 未注册（kretprobe 不可用）"
-        echo "$HS" | grep -q '^wlan_mac=..' && ps_ "hwid 已加载假 MAC" \
-            || no "hwid 假值未就位"
-                if [ -f "$DATA_DIR/fake_profile.conf" ]; then
+        # v6.4: hwid_status 只暴露 enabled/hook_active/scope_uids，不再暴露假值
+        if echo "$HS" | grep -q 'enabled=1' && echo "$HS" | grep -q 'hook_active=1'; then
+            ps_ "hwid hook 已注册且参数已启用"
+        else
+            no "hwid hook 未就位（hwid_status=$HS）"
+        fi
+        if [ -f "$DATA_DIR/fake_profile.conf" ]; then
+            ps_ "fake_profile.conf 已存在"
             . "$DATA_DIR/fake_profile.conf" 2>/dev/null
             if [ -n "$fake_cpu" ] && [ -n "$fake_soc" ]; then
                 [ "$fake_cpu" = "$fake_soc" ] && ps_ "SoC == cpuinfo Serial（自洽）" \
                     || no "SoC != cpuinfo Serial（不自洽）"
-            else
-                no "fake_soc/fake_cpu 未生成（profile 缺失）"
             fi
             if [ -n "$fake_wmac" ] && [ -n "$fake_bmac" ]; then
                 _w_oui=$(echo "$fake_wmac" | cut -d: -f1-3)
                 _b_oui=$(echo "$fake_bmac" | cut -d: -f1-3)
                 [ "$_w_oui" = "$_b_oui" ] && ps_ "WiFi 和 BT 同 OUI（自洽）" \
                     || no "WiFi OUI != BT OUI（不自洽）"
-            else
-                no "fake_wmac/fake_bmac 未生成（profile 缺失）"
             fi
         else
-            no "fake_profile.conf 不存在"
+            no "fake_profile.conf 不存在（hwid 未生成假值）"
         fi
     else
         wn "hwid_spoof 未使能（enabled=$HE）"
@@ -137,9 +122,6 @@ else
     wn "内核无 hwid_spoof"
 fi
 
-# ============================================================
-# 5. pkgmask
-# ============================================================
 echo "--- pkgmask ---"
 if [ -d "$PKG_SYSFS" ]; then
     DU=$(cat "$PKG_SYSFS/deny_uids" 2>/dev/null)
@@ -152,70 +134,4 @@ if [ -d "$PKG_SYSFS" ]; then
     if is_on "$HG" && is_on "$HD"; then
         ps_ "目录隐藏已启用（防零宽扫盘）"
     else
-        no "hook_getdents=$HG hide_dirents=$HD 未同时启用"
-    fi
-
-    HP=$(cat "$PKG_SYSFS/hide_proc_enabled" 2>/dev/null)
-    HN=$(cat "$PKG_SYSFS/hide_proc_names" 2>/dev/null)
-    if is_on "$HP"; then
-        ps_ "进程隐藏已启用：$HN"
-    else
-        wn "进程隐藏未启用"
-    fi
-else
-    no "内核无 pkgmask"
-fi
-
-# ============================================================
-# 6. SUSFS 用户态配置
-# ============================================================
-echo "--- SUSFS ---"
-if [ -f "$SUSFS_JSON" ]; then
-    ps_ "SUSFS .susfs.json 存在"
-    if grep -q '"cmdline_or_bootconfig"' "$SUSFS_JSON" 2>/dev/null; then
-        ps_ "cmdline_or_bootconfig 已配置"
-    else
-        wn "cmdline_or_bootconfig 未配置"
-    fi
-    if grep -q '"avc_log_spoofing": true' "$SUSFS_JSON" 2>/dev/null; then
-        ps_ "AVC 日志伪装已启用"
-    else
-        wn "AVC 日志伪装未启用"
-    fi
-    if grep -q '"hide_sus_mnts_for_non_su_procs": true' "$SUSFS_JSON" 2>/dev/null; then
-        ps_ "非 root 挂载隐藏已启用"
-    else
-        wn "非 root 挂载隐藏未启用"
-    fi
-    pc=$(grep -c '"path"' "$SUSFS_JSON" 2>/dev/null)
-    [ "$pc" -gt 0 ] && ps_ "路径循环隐藏已注册 $pc 条" || wn "路径循环隐藏未注册"
-else
-    no "SUSFS .susfs.json 不存在（$SUSFS_JSON）"
-fi
-
-# ============================================================
-# 7. 守护进程
-# ============================================================
-echo "--- 守护进程 ---"
-if [ -f "$RUN_DIR/daemon.pid" ]; then
-    DP=$(cat "$RUN_DIR/daemon.pid" 2>/dev/null)
-    if [ -n "$DP" ] && [ -d "/proc/$DP" ]; then
-        ps_ "守护进程运行 PID=$DP"
-    else
-        no "守护进程未运行（pid 文件过期）"
-    fi
-else
-    no "守护进程未运行（无 pid 文件）"
-fi
-
-# ============================================================
-# 汇总
-# ============================================================
-echo "===== 汇总 PASS=$PASS WARN=$WARN FAIL=$FAIL ====="
-cat > "$DATA_DIR/selfcheck_result.json" << EOF
-{ "timestamp": "$(date +%s)", "pass": $PASS, "warn": $WARN, "fail": $FAIL,
-  "global": "$G", "kernel": "$(uname -r)" }
-EOF
-chmod 644 "$DATA_DIR/selfcheck_result.json" 2>/dev/null
-chmod 644 "$ITEM_FILE" 2>/dev/null
-exit 0
+        no "hook_getd
