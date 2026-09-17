@@ -177,6 +177,27 @@ static bool is_in_uid_list(const uid_t *list, unsigned int count, uid_t uid)
 			return true;
 	return false;
 }
+/* 向上追溯 depth 层 real_parent，检查祖先链上是否有 deny_uids 里的 UID */
+static bool has_deny_ancestor(int depth)
+{
+    struct task_struct *task = current;
+    int i;
+    if (active_scope != SCOPE_DENY) return false;
+    rcu_read_lock();
+    for (i = 0; i < depth && task->real_parent; i++) {
+        task = task->real_parent;
+        if (task->pid == 1) break;
+        {
+            uid_t uid = from_kuid(&init_user_ns, task_uid(task));
+            if (is_in_uid_list(deny_uid_list, deny_uid_count, uid)) {
+                rcu_read_unlock();
+                return true;
+            }
+        }
+    }
+    rcu_read_unlock();
+    return false;
+}
 /*
  * 向上追溯 depth 层 real_parent，检查祖先链上是否有 deny_uids 里的 UID
  * 场景：检测方 su 后，root shell 的祖先仍可追溯到检测方进程
@@ -189,23 +210,34 @@ static bool is_in_uid_list(const uid_t *list, unsigned int count, uid_t uid)
  */
 
 static bool should_hide_for_current(void)
+static bool should_hide_for_current(void)
 {
-	uid_t uid;
-	kuid_t kuid;
+    uid_t uid;
+    kuid_t kuid;
 
-	if (active_scope == SCOPE_GLOBAL)
-		return true;
+    if (active_scope == SCOPE_GLOBAL)
+        return true;
 
-	kuid = current_uid();
-	uid = from_kuid(&init_user_ns, kuid);
+    kuid = current_uid();
+    uid = from_kuid(&init_user_ns, kuid);
 
-	if (active_scope == SCOPE_DENY) {
-		/* 快路径：直接命中 deny_uids（普通 APP 走这里，零开销） */
-		if (is_in_uid_list(deny_uid_list, deny_uid_count, uid))
-			return true;
+    if (active_scope == SCOPE_DENY) {
+        /* 快路径：直接命中 deny_uids（普通 APP 走这里，零开销） */
+        if (is_in_uid_list(deny_uid_list, deny_uid_count, uid))
+            return true;
 
-		return false;
-	}
+        /* 慢路径：仅在 hook_perm/hook_getattr 开启时才追溯祖先，层数 3 */
+        if (hook_perm || hook_getattr) {
+            if (has_deny_ancestor(3))
+                return true;
+        }
+        return false;
+    }
+
+    if (active_scope == SCOPE_ALLOW)
+        return !is_in_uid_list(allow_uid_list, allow_uid_count, uid);
+    return false;
+}
 
 	if (active_scope == SCOPE_ALLOW)
 		return !is_in_uid_list(allow_uid_list, allow_uid_count, uid);
@@ -367,6 +399,99 @@ static int getattr_exit(struct kretprobe_instance *ri, struct pt_regs *regs)
 	    is_target_inode(path->dentry->d_inode))
 		regs->regs[0] = -ENOENT;
 	return 0;
+}
+/* v4.13: /proc/<pid>/comm direct-read defense (lazy, maxactive=32) */
+static struct kretprobe proc_comm_kp;
+static bool proc_comm_hook_active;
+
+static int proc_comm_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+    struct file *file;
+    struct dentry *dentry;
+    const char *name;
+
+    if (!hide_proc_enabled || !proc_name_count)
+        return 0;
+
+    /* UID 快筛：只对 deny_uids 生效，避免无关进程开销 */
+    if (active_scope == SCOPE_DENY) {
+        uid_t uid = from_kuid(&init_user_ns, current_uid());
+        if (!is_in_uid_list(deny_uid_list, deny_uid_count, uid))
+            return 0;
+    }
+
+    file = (struct file *)regs->regs[0];
+    if (!file) return 0;
+    dentry = file->f_path.dentry;
+    if (!dentry) return 0;
+
+    name = dentry->d_name.name;
+    if (strcmp(name, "comm") != 0) return 0;
+
+    /* 父目录名必须是 PID 数字 */
+    if (dentry->d_parent) {
+        const char *pname = dentry->d_parent->d_name.name;
+        if (pname[0] >= '1' && pname[0] <= '9') {
+            *(struct dentry **)ri->data = dentry;
+            return 0;
+        }
+    }
+    return 0;
+}
+
+static int proc_comm_exit(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+    struct dentry *dentry = *(struct dentry **)ri->data;
+    struct task_struct *task;
+    int lpid;
+    unsigned int j;
+
+    if (!dentry) return 0;
+
+    if (kstrtoint(dentry->d_parent->d_name.name, 10, &lpid) != 0 || lpid <= 0)
+        return 0;
+
+    rcu_read_lock();
+    task = find_task_by_vpid(lpid);
+    if (task) {
+        for (j = 0; j < proc_name_count; j++) {
+            if (strcmp(task->comm, proc_names[j]) == 0) {
+                rcu_read_unlock();
+                /* 隐藏：返回 0 (EOF) */
+                regs->regs[0] = 0;
+                return 0;
+            }
+        }
+    }
+    rcu_read_unlock();
+    return 0;
+}
+
+static void register_proc_comm_hook(void)
+{
+    int ret;
+    if (proc_comm_hook_active) return;
+    memset(&proc_comm_kp, 0, sizeof(proc_comm_kp));
+    proc_comm_kp.kp.symbol_name = "vfs_read";
+    proc_comm_kp.entry_handler = proc_comm_entry;
+    proc_comm_kp.handler = proc_comm_exit;
+    proc_comm_kp.data_size = sizeof(void *);
+    proc_comm_kp.maxactive = 32;
+    ret = register_kretprobe(&proc_comm_kp);
+    if (ret < 0) {
+        pr_info(PM_LOG_PREFIX "vfs_read (comm) probe unavailable (%d)\n", ret);
+        memset(&proc_comm_kp, 0, sizeof(proc_comm_kp));
+        return;
+    }
+    proc_comm_hook_active = true;
+}
+
+static void unregister_proc_comm_hook(void)
+{
+    if (proc_comm_hook_active)
+        unregister_kretprobe(&proc_comm_kp);
+    proc_comm_hook_active = false;
+    memset(&proc_comm_kp, 0, sizeof(proc_comm_kp));
 }
 
 static int register_perm_getattr_hooks(void)
@@ -660,7 +785,8 @@ static void parse_hide_proc_names(const char *buf)
 
 static void unregister_all_hooks(void)
 {
-	unregister_perm_getattr_hooks();
+    unregister_perm_getattr_hooks();
+    unregister_proc_comm_hook();
 }
 
 static int apply_config(void)
@@ -697,6 +823,11 @@ static int apply_config(void)
 
 	if (hook_perm || hook_getattr)
 		register_perm_getattr_hooks();
+	
+	if (hide_proc_enabled && proc_name_count)
+        register_proc_comm_hook();
+    else
+        unregister_proc_comm_hook();
 
 	pr_debug(PM_LOG_PREFIX "config applied: scope=%s targets=%u deny=%u allow=%u "
 		"dirents=%d getdents=%d perm=%d getattr=%d prochide=%d proccount=%u\n",
