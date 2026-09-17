@@ -1,7 +1,7 @@
 id=susfs_env_guard
 name=SUSFS Env Guard
-version=v3.0
-versionCode=30
+version=v6.4
+versionCode=640
 webui=true
 author=a41929566
 description=内核级 SUSFS 伪装 / 硬件 ID 拦截 / 应用隐藏 / 进程隐藏 / 路径隐藏；一键修复 + WebUI 实时状态
