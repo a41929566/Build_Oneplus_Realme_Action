@@ -604,7 +604,7 @@ jobs:
           echo "[OK] SUSFS 补丁处理流程全部完成"
 
       - name: 🔧 Set gki_defconfig (设置编译配置) 
-        run: |
+        run: |          
           cd kernel_workspace
           echo "CONFIG_KSU=y" >> ./common/arch/arm64/configs/gki_defconfig
           echo "CONFIG_KPM=y" >> ./common/arch/arm64/configs/gki_defconfig
@@ -638,6 +638,12 @@ jobs:
           
           #Remove check_defconfig
           sudo sed -i 's/check_defconfig//' ./common/build.config.gki
+          # === Step 3: 打开 pkgmask 和 hwid_spoof ===
+          echo "CONFIG_PKGMASK=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_PKGMASK_HWID=y" >> ./common/arch/arm64/configs/gki_defconfig
+          # 确保 kretprobe 依赖项开启（GKI 默认可能开了，显式声明防止被覆盖）
+          echo "CONFIG_KPROBES=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KRETPROBES=y" >> ./common/arch/arm64/configs/gki_defconfig
       - name: 🔧 Apply readdir weak hook (step 1)
         run: |
           cd kernel_workspace/common
