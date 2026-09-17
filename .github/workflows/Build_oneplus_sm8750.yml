@@ -638,7 +638,7 @@ jobs:
           
           #Remove check_defconfig
           sudo sed -i 's/check_defconfig//' ./common/build.config.gki
-       - name: 🔧 Apply readdir weak hook (step 1)
+      - name: 🔧 Apply readdir weak hook (step 1)
         run: |
           cd kernel_workspace/common
           cp "${GITHUB_WORKSPACE}/patch/patch/readdir.c" fs/readdir.c
