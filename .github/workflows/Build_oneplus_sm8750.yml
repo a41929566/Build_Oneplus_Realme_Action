@@ -647,7 +647,27 @@ jobs:
           # 校验：SUSFS SUS_PATH 段必须在（合并版 readdir.c）
           grep -q 'susfs_is_inode_sus_path' fs/readdir.c || { echo "FATAL: readdir.c 缺 SUSFS SUS_PATH 段"; exit 1; }
           echo "[OK] readdir weak hook applied (step 1)"    
-
+      - name: 🔧 Apply PkgMask files (step 2 - no CONFIG_PKGMASK yet)
+        run: |
+          cd kernel_workspace/common
+          echo "安装 pkgmask 驱动源码 (drivers/misc/pkgmask/)..."
+          mkdir -p drivers/misc/pkgmask
+          cp "${GITHUB_WORKSPACE}"/patch/patch/pkgmask/* drivers/misc/pkgmask/
+          
+          # 硬校验：文件必须到位
+          test -f drivers/misc/pkgmask/pkgmask.c || { echo "FATAL: pkgmask.c 缺失"; exit 1; }
+          test -f drivers/misc/pkgmask/hwid_spoof.c || { echo "FATAL: hwid_spoof.c 缺失"; exit 1; }
+          test -f drivers/misc/pkgmask/hwid_spoof.h || { echo "FATAL: hwid_spoof.h 缺失"; exit 1; }
+          test -f drivers/misc/pkgmask/Kconfig || { echo "FATAL: Kconfig 缺失"; exit 1; }
+          test -f drivers/misc/pkgmask/Makefile || { echo "FATAL: Makefile 缺失"; exit 1; }
+          
+          # 挂载 Kconfig / Makefile 到 drivers/misc
+          grep -q 'source "drivers/misc/pkgmask/Kconfig"' drivers/misc/Kconfig || \
+            printf '\nsource "drivers/misc/pkgmask/Kconfig"\n' >> drivers/misc/Kconfig
+          grep -q 'obj-$(CONFIG_PKGMASK) += pkgmask/' drivers/misc/Makefile || \
+            printf '\nobj-$(CONFIG_PKGMASK) += pkgmask/\n' >> drivers/misc/Makefile
+          
+          echo "[OK] pkgmask files mounted (step 2, CONFIG_PKGMASK is OFF)"
       - name: 🔧 Set Kernel name (设置内核名称)
         run: |
           cd kernel_workspace
