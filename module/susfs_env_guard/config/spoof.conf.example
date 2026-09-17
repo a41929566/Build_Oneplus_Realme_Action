@@ -37,9 +37,16 @@ SPOOF_HIDE_SUS_MNTS=1
 SPOOF_KSTAT_TMP=1
 CLEAN_TMP=1
 SPOOF_PATH_HIDE=1
-RECURSIVE_HIDE=0
+
+# v6.4-opt1: 递归隐藏 ksu/modules 子目录，减少检测点
+# 注意：会让 sus_path 列表从十几条膨胀到几十条。内核 MAX_HIDE_TARGETS=64，
+# 若超过会在 dmesg 里报 add_target failed，不影响开机，只是部分路径不隐藏。
+RECURSIVE_HIDE=1
+
 PATH_HIDE_EXTRA=
-HIDE_MODULE_PATH=0
+
+# v6.4-opt1: 隐藏本模块目录自身（模块名也是一个检测特征）
+HIDE_MODULE_PATH=1
 
 UNAME_FROM_SLOT=1
 EXPECTED_UNAME=
@@ -52,7 +59,6 @@ CLEANUP_RUNTIME=1
 log_level=2
 log_max_kb=512
 
-# v6.4: idle 写 status 间隔从 15 秒缩短到 3 秒，UI 反应更快
 daemon_interval_idle=3
 daemon_interval_active=1
 
