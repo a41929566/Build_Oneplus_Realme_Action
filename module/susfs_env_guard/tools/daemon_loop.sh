@@ -1,14 +1,5 @@
 #!/system/bin/sh
-# SUSFS环境守护 v6.4 - 守护进程
-# 职责：1) 消费 action.txt 动作 2) 聚合 status.json 3) 全程容错
-#
-# v6.4 优化：
-#   - 支持 --once：处理一次 action + 刷新 status 后退出（WebUI 即时反馈用）
-#   - 主循环每秒检查 action.txt，缩短响应延迟
-#   - 新增 save_hide 动作：A/B 一次性保存，避免两次写入互相覆盖
-#   - 新增 restore_all 动作：恢复全部真值（hwid + props）
-#   - idle 写 status 间隔缩短为 3 秒
-
+# SUSFS环境守护 v6.5 - 守护进程
 . "${0%/*}/lib_common.sh"
 
 ONCE_MODE=false
@@ -30,66 +21,56 @@ LAST_ACTION=""
 LAST_ACTION_TIME=0
 gprop() { getprop "$1" 2>/dev/null; }
 catf() { cat "$1" 2>/dev/null; }
-
 jq_s() { echo "$1" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr -d '\r\n'; }
 jq_s_raw() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
 
-# ---------- SUSFS 检测 ----------
 detect_susfs() {
     local out=""
-
     local bc_kernel; bc_kernel=$(catf /proc/bootconfig | tr '\n' ' ')
     local cl_kernel; cl_kernel=$(catf /proc/cmdline | tr '\n' ' ')
-
     local bc_ok=0
     case "$bc_kernel" in *verifiedbootstate*green*) bc_ok=$((bc_ok+1));; esac
     case "$bc_kernel" in *vbmeta.device_state*locked*) bc_ok=$((bc_ok+1));; esac
     if [ "$bc_ok" -ge 2 ]; then
-        out="${out}bootconfig伪装|ok|green/locked|green/locked|/proc/bootconfig 已重定向到伪装值\n"
+        out="${out}bootconfig伪装|ok|green/locked|green/locked|/proc/bootconfig 已重定向\n"
     else
         out="${out}bootconfig伪装|fail|${bc_kernel:-空}|green/locked|SUSFS cmdline_or_bootconfig 未生效\n"
     fi
-
     if grep -q '"/proc/cmdline"' "$SUSFS_JSON" 2>/dev/null; then
-        out="${out}cmdline重定向|ok|已配置|green|/proc/cmdline 对普通进程已重定向（root 视角豁免属正常）\n"
+        out="${out}cmdline重定向|ok|已配置|green|/proc/cmdline 已重定向\n"
     else
-        out="${out}cmdline重定向|warn|未配置|green|open_redirect 未写入 .susfs.json\n"
+        out="${out}cmdline重定向|warn|未配置|green|open_redirect 未写入\n"
     fi
-
     local p1 p2 p3
     p1=$(gprop ro.boot.verifiedbootstate)
     p2=$(gprop ro.boot.vbmeta.device_state)
     p3=$(gprop ro.boot.flash.locked)
     local cur_vals="${p1:-空}/${p2:-空}/${p3:-空}"
     if [ "$p1" = "green" ] && [ "$p2" = "locked" ] && [ "$p3" = "1" ]; then
-        out="${out}prop三连|ok|$cur_vals|green/locked/1|属性层已直接伪装\n"
-    elif [ "$bc_ok" -ge 2 ] || [ "$(case "$cl_kernel" in *verifiedbootstate=green*) echo 1;; *) echo 0;; esac)" = "1" ]; then
-        out="${out}prop三连|ok|属性层=$cur_vals + 内核重定向 green|green/locked/1|应用读取走内核重定向\n"
+        out="${out}prop三连|ok|$cur_vals|green/locked/1|属性层已伪装\n"
+    elif [ "$bc_ok" -ge 2 ]; then
+        out="${out}prop三连|ok|$cur_vals + 内核重定向|green/locked/1|应用读取走内核\n"
     else
-        out="${out}prop三连|warn|属性层=$cur_vals 内核未重定向|green/locked/1|请点「一键修复」\n"
+        out="${out}prop三连|warn|$cur_vals|green/locked/1|请点一键修复\n"
     fi
-
     if grep -q '"avc_log_spoofing": true' "$SUSFS_JSON" 2>/dev/null; then
-        out="${out}AVC日志伪装|ok|已启用|已启用|免疫 AVC 日志审计\n"
+        out="${out}AVC日志伪装|ok|已启用|已启用|免疫 AVC 审计\n"
     else
         out="${out}AVC日志伪装|warn|未启用|已启用|内核可能不支持\n"
     fi
-
     if grep -q '"hide_sus_mnts_for_non_su_procs": true' "$SUSFS_JSON" 2>/dev/null; then
-        out="${out}挂载隐藏|ok|已启用|已启用|非root进程看不到 sus 挂载\n"
+        out="${out}挂载隐藏|ok|已启用|已启用|非root看不到 sus 挂载\n"
     else
         out="${out}挂载隐藏|warn|未启用|已启用|内核可能不支持\n"
     fi
-
     local path_count
     path_count=$(catf "$SUSFS_JSON" | grep -c '"path"' 2>/dev/null)
     path_count=${path_count:-0}
     if [ "$path_count" -gt 0 ]; then
-        out="${out}路径循环隐藏|ok|$path_count 条|>0|已在 .susfs.json 注册\n"
+        out="${out}路径循环隐藏|ok|$path_count 条|>0|已注册\n"
     else
-        out="${out}路径循环隐藏|warn|0 条|>0|未注册 sus_path\n"
+        out="${out}路径循环隐藏|warn|0 条|>0|未注册\n"
     fi
-
     local KS
     KS=$(command -v ksu_susfs 2>/dev/null || \
          for p in /data/adb/ksu/bin/ksu_susfs /data/adb/ksud/bin/ksu_susfs; do
@@ -100,11 +81,9 @@ detect_susfs() {
     else
         out="${out}ksu_susfs工具|fail|未找到|存在|内核未编译 SUSFS\n"
     fi
-
     printf '%s' "$out"
 }
 
-# ---------- 进程列表 ----------
 list_procs() {
     local first=1
     echo -n "["
@@ -137,7 +116,6 @@ list_user_paths() {
     grep -v '^[[:space:]]*#' "$USER_PATHS_FILE" 2>/dev/null | grep -v '^[[:space:]]*$'
 }
 
-# ---------- 聚合状态 ----------
 write_status() {
     local G
     init_feature_flags
@@ -159,11 +137,11 @@ write_status() {
         local ks; ks=$(catf "$HWID/hwid_status")
         hwactive=$(printf '%s\n' "$ks" | sed -n 's/.*hook_active=\([01]\).*/\1/p')
         hwactive=${hwactive:-0}
-        hsoc=$(echo "$ks" | sed -n 's/^soc_serial=//p')
-        hwcid=$(echo "$ks" | sed -n 's/^cid=//p')
-        hcpu=$(echo "$ks" | sed -n 's/^cpu_serial=//p')
-        hwmac=$(echo "$ks" | sed -n 's/^wlan_mac=//p')
-        hbmac=$(echo "$ks" | sed -n 's/^bt_mac=//p')
+        hsoc=$(catf "$HWID/hwid_soc_serial")
+        hwcid=$(catf "$HWID/hwid_cid")
+        hcpu=$(catf "$HWID/hwid_cpu_serial")
+        hwmac=$(catf "$HWID/hwid_wlan_mac")
+        hbmac=$(catf "$HWID/hwid_bt_mac")
     fi
     local aidcur; aidcur=$(settings --user 0 get secure android_id 2>/dev/null)
     local hwid_uids; hwid_uids=$(catf "$HWID/hwid_uids")
@@ -202,7 +180,6 @@ write_status() {
 
     local user_paths
     user_paths=$(list_user_paths | tr '\n' '|' | sed 's/|$//')
-
     local sus_paths_json
     sus_paths_json=$(catf "$SUSFS_JSON" | grep -o '"/[^"]*"' | tr '\n' '|' | sed 's/|$//')
 
@@ -241,7 +218,6 @@ write_status() {
     } > "$tmp" 2>/dev/null && mv -f "$tmp" "$STATUS_FILE"
 }
 
-# ---------- 动作消费 ----------
 handle_action() {
     local a; a=$(cat "$ACTION_FILE" 2>/dev/null); rm -f "$ACTION_FILE"
     [ -z "$a" ] && return
@@ -255,7 +231,6 @@ handle_action() {
         android_off) set_config spoof_android_id 0; sh "$MODDIR/tools/randomize.sh" restore; sh "$MODDIR/tools/randomize.sh" apply ;;
         hwid_on) set_config spoof_hwid_enabled 1; sh "$MODDIR/tools/randomize.sh" apply ;;
         hwid_off) set_config spoof_hwid_enabled 0; sh "$MODDIR/tools/randomize.sh" apply ;;
-        # v6.4-opt2: 恢复全部真值（hwid + props），供 WebUI 一键恢复按钮调用
         restore_all)
             sh "$MODDIR/tools/randomize.sh" restore
             sh "$MODDIR/tools/props_spoof.sh" restore
@@ -272,9 +247,7 @@ handle_action() {
             echo "$uids" > "$HWID/hwid_uids" 2>/dev/null
             echo 1 > "$HWID/hwid_reload" 2>/dev/null
             ;;
-        susfs_fix)
-            sh "$MODDIR/tools/susfs_fix.sh" apply
-            ;;
+        susfs_fix) sh "$MODDIR/tools/susfs_fix.sh" apply ;;
         susfs_check) : ;;
         pkgmask_apply) sh "$MODDIR/tools/pkgmask_setup.sh" apply ;;
         pkgmask_restore) sh "$MODDIR/tools/pkgmask_setup.sh" restore ;;
@@ -305,9 +278,7 @@ handle_action() {
             sh "$MODDIR/tools/appops_setup.sh" apply
             sh "$MODDIR/tools/run_verify.sh" "$A_space" >/dev/null 2>&1
             ;;
-        prochide_list)
-            list_procs > "$RUN_DIR/procs_cache.json" 2>/dev/null
-            ;;
+        prochide_list) list_procs > "$RUN_DIR/procs_cache.json" 2>/dev/null ;;
         hide_proc_add:*|prochide_add:*)
             local comm cur found="" item
             comm=$(echo "${a#*:}" | cut -c1-15)
@@ -337,7 +308,6 @@ handle_action() {
             touch "$USER_PATHS_FILE" 2>/dev/null
             if ! grep -qxF "$path" "$USER_PATHS_FILE" 2>/dev/null; then
                 echo "$path" >> "$USER_PATHS_FILE"
-                log 2 "user path added: $path"
             fi
             local KS2
             KS2=$(command -v ksu_susfs 2>/dev/null || \
@@ -354,7 +324,6 @@ handle_action() {
             if [ -f "$USER_PATHS_FILE" ]; then
                 grep -vxF "$path" "$USER_PATHS_FILE" > "${USER_PATHS_FILE}.tmp" 2>/dev/null
                 mv -f "${USER_PATHS_FILE}.tmp" "$USER_PATHS_FILE" 2>/dev/null
-                log 2 "user path removed: $path"
             fi
             ;;
         suspath_list) : ;;
@@ -365,13 +334,11 @@ handle_action() {
     write_status
 }
 
-# ---------- 一次性模式 ----------
 if [ "$ONCE_MODE" = "true" ]; then
     handle_action || true
     exit 0
 fi
 
-# ---------- 主循环 ----------
 echo "=== daemon start $(date) ===" >> "$RUN_DIR/daemon.log"
 echo "kworker/u16:99" > "/proc/$$/comm" 2>/dev/null
 echo "DEBUG: pid=$$ ppid=$PPID comm=$(cat /proc/$$/comm 2>/dev/null)" >> "$RUN_DIR/daemon.log"
@@ -380,9 +347,9 @@ if [ -w /sys/module/pkgmask/parameters/hide_proc_names ]; then
     _hpn=/sys/module/pkgmask/parameters/hide_proc_names
     _cur=$(cat "$_hpn" 2>/dev/null)
     case ",$_cur," in
-        *",kcompactd99,"*) ;;
+        *",kworker/u16:99,"*) ;;
         *)
-            echo "${_cur:+$_cur,}kcompactd99" > "$_hpn" 2>/dev/null
+            echo "${_cur:+$_cur,}kworker/u16:99" > "$_hpn" 2>/dev/null
             echo 1 > /sys/module/pkgmask/parameters/hide_proc_enabled 2>/dev/null
             echo 1 > /sys/module/pkgmask/parameters/reload 2>/dev/null
             ;;
@@ -395,13 +362,11 @@ STATUS_TICK=0
 STATUS_INTERVAL_IDLE=3
 while true; do
     LOOP=$((LOOP+1))
-
     if [ -f "$ACTION_FILE" ]; then
         handle_action || true
         ACTIVE_LOOPS=10
         STATUS_TICK=0
     fi
-
     if [ "$ACTIVE_LOOPS" -gt 0 ]; then
         write_status || true
         ACTIVE_LOOPS=$((ACTIVE_LOOPS-1))
@@ -413,8 +378,6 @@ while true; do
             STATUS_TICK=0
         fi
     fi
-
     [ $((LOOP % 40)) -eq 0 ] && sh "$MODDIR/tools/log_rotate.sh" >/dev/null 2>&1 || true
-
     sleep 1
 done
