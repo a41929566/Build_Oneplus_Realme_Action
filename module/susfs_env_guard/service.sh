@@ -8,68 +8,84 @@
 #   2) settings / appops 服务需要 system_server 就绪后才能调用
 #   3) kprobe 挂载延后可以避免系统启动早期的进程调度冲突
 #
-# v6.4-opt1: 增加启动计数器，连续多次启动异常自动 disable 模块
+# v6.4-opt2: 时间窗口启动计数器（避免开发阶段频繁刷机误禁）
 
 . "${0%/*}/tools/lib_common.sh"
 
 mkdir -p "$RUN_DIR" 2>/dev/null
 
 # ============================================================
-# v6.4-opt1: 失败降级保护
+# v6.4-opt2: 时间窗口启动计数器
 #
 # 逻辑：
-#   - 每次 service.sh 运行 boot_count+1
-#   - 若 boot_count > 3（即第 4 次开机）→ 判定模块引发异常，自动 disable
-#   - 若本次启动后 120 秒内系统仍正常 → 重置计数器为 0
+#   - boot_history.txt 记录最近 N 次启动的 epoch 秒时间戳
+#   - 每次启动：过滤掉 5 分钟之外的旧记录，追加当前时间戳
+#   - 若 5 分钟内有 >= 5 次启动 → 判定为启动循环，自动 disable
+#   - 开机 300 秒后系统稳定，清空历史文件
 #
-# 效果：
-#   即使模块配置错误导致卡黄字，最多刷 4 次之后模块自动禁用，用户能进系统修
+# 好处：
+#   - 正常使用：每次开机只产生 1 条记录，永远不触发禁用
+#   - 频繁调试：5 分钟内刷 5 次才会禁用，不会一刷就禁
 # ============================================================
-BOOT_COUNT_FILE="$DATA_DIR/boot_count"
-count=$(cat "$BOOT_COUNT_FILE" 2>/dev/null || echo 0)
-case "$count" in ''|*[!0-9]*) count=0;; esac
-count=$((count+1))
-echo "$count" > "$BOOT_COUNT_FILE" 2>/dev/null
+BOOT_HISTORY_FILE="$DATA_DIR/boot_history.txt"
+WINDOW=300
+LIMIT=5
 
-if [ "$count" -gt 3 ]; then
-    # 自动禁用：KSU/Magisk 看到 disable 文件后会跳过本模块
+NOW=$(date +%s 2>/dev/null)
+case "$NOW" in ''|*[!0-9]*) NOW=0;; esac
+
+_tmp="$DATA_DIR/.bh.tmp"
+: > "$_tmp"
+
+if [ -f "$BOOT_HISTORY_FILE" ]; then
+    while IFS= read -r ts; do
+        case "$ts" in
+            ''|*[!0-9]*) continue ;;
+        esac
+        if [ $((NOW - ts)) -lt "$WINDOW" ]; then
+            echo "$ts" >> "$_tmp"
+        fi
+    done < "$BOOT_HISTORY_FILE"
+fi
+
+echo "$NOW" >> "$_tmp"
+mv -f "$_tmp" "$BOOT_HISTORY_FILE" 2>/dev/null
+
+count=$(wc -l < "$BOOT_HISTORY_FILE" 2>/dev/null | tr -d ' ')
+case "$count" in ''|*[!0-9]*) count=0;; esac
+
+if [ "$count" -ge "$LIMIT" ]; then
     touch "$MODDIR/disable" 2>/dev/null
     {
         echo "=== SUSFS Env Guard auto-disabled at $(date) ==="
-        echo "boot_count=$count exceeded limit (3)"
-        echo "last_boot_id=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"
-        echo "kernel=$(uname -r 2>/dev/null)"
+        echo "$WINDOW 秒内启动 $count 次（阈值 $LIMIT），判定为启动循环。"
         echo ""
-        echo "该模块被自动禁用，因为连续多次开机计数超过阈值。"
         echo "排查方法："
         echo "  1) 查看 /data/adb/modules/susfs_env_guard/run/boot.log"
         echo "  2) 查看 /data/adb/modules/susfs_env_guard/run/run.log"
-        echo "  3) 确认 spoof.conf 没有写入 ro.boot.* 属性"
-        echo "修复后手动删除 disable 文件并重启："
+        echo "  3) 确认 spoof.conf 里没有写入任何 ro.boot.* 属性"
+        echo "  4) 确认内核 hwid_spoof 惰性化生效（不会在 init 阶段注册 kretprobe）"
+        echo ""
+        echo "修复后手动恢复："
         echo "  rm /data/adb/modules/susfs_env_guard/disable"
+        echo "  rm /data/adb/susfs_env_guard/boot_history.txt"
     } > "$DATA_DIR/disabled.log" 2>/dev/null
-    log 0 "boot_count=$count > 3, module auto-disabled"
+    log 0 "service.sh: boot count=$count >= $LIMIT in ${WINDOW}s, auto-disabled"
     exit 0
 fi
 
-log 2 "service.sh start, boot_count=$count"
+log 2 "service.sh start, boot_in_window=$count"
 
 # 后台执行，不阻塞开机
 (
     sleep 10
     sh "$MODDIR/tools/run.sh" > "$RUN_DIR/boot.log" 2>&1
 
-    # 若 120 秒后计数器没有继续增长（即系统稳定运行），重置计数器
-    # 这表示本次启动成功，不再视为异常
+    # 开机 300 秒后系统稳定，清空启动历史
     (
-        sleep 120
-        _cur=$(cat "$BOOT_COUNT_FILE" 2>/dev/null || echo 0)
-        case "$_cur" in ''|*[!0-9]*) _cur=0;; esac
-        # 只有当前值还是本次启动的值时才重置（避免覆盖其他进程的写入）
-        if [ "$_cur" = "$count" ]; then
-            echo 0 > "$BOOT_COUNT_FILE" 2>/dev/null
-            log 2 "boot_count reset to 0 after 120s stable"
-        fi
+        sleep 300
+        rm -f "$BOOT_HISTORY_FILE" 2>/dev/null
+        log 2 "boot_history cleared after 300s stable"
     ) &
 ) &
 
