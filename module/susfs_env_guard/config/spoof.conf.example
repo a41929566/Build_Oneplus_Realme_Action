@@ -72,6 +72,16 @@ PATH_HIDE_EXTRA="/data/adb/modules/playintegrityfix /data/adb/modules/teesimulat
 HIDE_MODULE_PATH=1
 
 # ============================================================
+# ============================================================
+# ⑦-v2: 系统版本属性伪装（开机 10 秒后写入）
+# 来源：原设备未解锁时的真实值
+# ⚠️ 这三个是 ro.* 属性，通过 resetprop -n 写入（不触发 init 校验）
+# ⚠️ 必须与 hwid_spoof 的假值同时生效，否则 Play Integrity 交叉验证会失败
+# ============================================================
+SPOOF_BUILD_PROPS=1
+PROP_FINGERPRINT="OnePlus/PKR110/OP60EBL1:16/AP3A.240617.008/V.314736c-e5ac6b-eaf617:user/release-keys"
+PROP_DISPLAY_ID="PKR110_16.0.5.700(CN01)"
+PROP_INCREMENTAL="V.314736c-e5ac6b-eaf617"
 # ⑦ 期望值（自检对比用，不影响伪装）
 # ============================================================
 UNAME_FROM_SLOT=1
