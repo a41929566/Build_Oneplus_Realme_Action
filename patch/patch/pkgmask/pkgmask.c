@@ -4,10 +4,8 @@
  *
  * v4.15 changes:
  *   - proc_comm kretprobe hook point changed from vfs_read to ksys_read
- *     Reason: vfs_read is LTO-inlined on GKI 6.6; the probe never fires.
- *   - proc_comm_entry now converts fd to struct fd via __fdget and stores
- *     the fd for the exit handler; exit handler releases with fdput.
- *   - proc_comm data_size changed from sizeof(void*) to sizeof(struct fd).
+ *     (vfs_read is LTO-inlined on GKI 6.6)
+ *   - proc_comm_entry converts fd to struct fd via __fdget; exit fdput
  */
 
 #include <linux/kernel.h>
@@ -35,7 +33,6 @@
 #include <linux/sched.h>
 #include "hwid_spoof.h"
 
-
 #define PM_LOG_PREFIX "pkgmask: "
 #define MAX_HIDE_TARGETS 64
 #define TARGET_TEXT_LEN 512
@@ -43,8 +40,6 @@
 #define MAX_DENY_UIDS 128
 #define MAX_ALLOW_UIDS 128
 #define UID_LIST_LEN 1024
-
-/* --------------------------- tunables --------------------------- */
 
 static bool hide_dirents = true;
 module_param(hide_dirents, bool, 0600);
@@ -62,7 +57,6 @@ static bool hook_getattr;
 module_param(hook_getattr, bool, 0600);
 MODULE_PARM_DESC(hook_getattr, "Enable vfs_getattr hook");
 
-
 static char scope_mode[16] = "deny";
 module_param_string(scope_mode, scope_mode, sizeof(scope_mode), 0600);
 MODULE_PARM_DESC(scope_mode, "Hide scope: global, deny, or allow");
@@ -79,7 +73,6 @@ static char target_paths[TARGET_PATHS_LEN];
 module_param_string(target_paths, target_paths, sizeof(target_paths), 0600);
 MODULE_PARM_DESC(target_paths, "Comma-separated absolute paths to hide");
 
-
 static bool hide_proc_enabled;
 module_param(hide_proc_enabled, bool, 0600);
 MODULE_PARM_DESC(hide_proc_enabled, "Hide /proc entries matching hide_proc_names (SUSFS guard)");
@@ -92,8 +85,6 @@ static unsigned int proc_name_count;
 module_param_string(hide_proc_names, hide_proc_names_buf,
 		    sizeof(hide_proc_names_buf), 0600);
 MODULE_PARM_DESC(hide_proc_names, "Comma-separated process names to hide in /proc");
-
-/* --------------------------- state --------------------------- */
 
 enum pkgmask_scope_mode {
 	SCOPE_GLOBAL = 0,
@@ -122,8 +113,6 @@ static uid_t deny_uid_list[MAX_DENY_UIDS];
 static unsigned int deny_uid_count;
 static uid_t allow_uid_list[MAX_ALLOW_UIDS];
 static unsigned int allow_uid_count;
-
-/* --------------------------- helpers --------------------------- */
 
 static bool is_in_uid_list(const uid_t *list, unsigned int count, uid_t uid)
 {
@@ -259,8 +248,6 @@ bool iterate_dir_filter(const char *name, const struct inode *dir)
 	}
 	return false;
 }
-
-/* --------------------------- perm/getattr kretprobes --------------------------- */
 
 static struct kretprobe perm_kp;
 static struct kretprobe getattr_kp;
@@ -401,7 +388,7 @@ static void register_proc_comm_hook(void)
 	int ret;
 	if (proc_comm_hook_active) return;
 	memset(&proc_comm_kp, 0, sizeof(proc_comm_kp));
-	/* v4.15: ksys_read instead of vfs_read (vfs_read is LTO-inlined) */
+	/* v4.15: ksys_read instead of vfs_read */
 	proc_comm_kp.kp.symbol_name = "ksys_read";
 	proc_comm_kp.entry_handler = proc_comm_entry;
 	proc_comm_kp.handler = proc_comm_exit;
@@ -463,8 +450,6 @@ static void unregister_perm_getattr_hooks(void)
 	memset(&perm_kp, 0, sizeof(perm_kp));
 	memset(&getattr_kp, 0, sizeof(getattr_kp));
 }
-
-/* --------------------------- target resolution --------------------------- */
 
 static void set_target_pkg(struct hidden_target *t, const char *path_str)
 {
@@ -615,8 +600,6 @@ static int resolve_target_paths(const char *buf)
 	}
 	return added ? 0 : ret;
 }
-
-/* --------------------------- config parsing --------------------------- */
 
 static int parse_scope_mode(const char *buf)
 {
@@ -772,8 +755,6 @@ static void reset_state(void)
 	active_scope = SCOPE_DENY;
 }
 
-/* --------------------------- sysfs reload / status --------------------------- */
-
 static int reload_store(const char *buf, const struct kernel_param *kp)
 {
 	if (buf[0] == '1')
@@ -799,8 +780,6 @@ static struct kernel_param_ops status_ops = {
 	.get = status_get,
 };
 module_param_cb(status, &status_ops, NULL, 0400);
-
-/* --------------------------- init --------------------------- */
 
 static int __init xk7a9f_init(void)
 {
