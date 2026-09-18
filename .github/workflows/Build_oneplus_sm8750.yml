@@ -149,7 +149,10 @@ jobs:
             oneplus_ace5_ultra)
                 DEFAULT_SUFFIX='-android15-8-ge58033dc8ea6-abogki498046332-4k'
               ;;
-            oneplus_13 | oneplus_13t | oneplus_ace5_pro | oneplus_ace_6 | oneplus_pad_2 | realme_GT7 | realme_GT7pro_Speed | realme_GT8)
+            oneplus_ace5_pro)
+                DEFAULT_SUFFIX='-android15-8-g7e1f3c083cc6-abogki467167594-4k'
+              ;;
+            oneplus_13 | oneplus_13t | oneplus_ace_6 | oneplus_pad_2 | realme_GT7 | realme_GT7pro_Speed | realme_GT8)
                 DEFAULT_SUFFIX='-android15-8-g93e223c276e7-abogki500782043-4k'
               ;;
             realme_GT7pro)
@@ -175,7 +178,10 @@ jobs:
               oneplus_ace5_ultra)
                   KERNEL_TIME='Sun Mar 29 12:31:26 UTC 2026'
                 ;;
-              oneplus_13 | oneplus_13t | oneplus_ace5_pro | oneplus_ace_6 | oneplus_pad_2 |realme_GT7 | realme_GT7pro_Speed | realme_GT8)
+              oneplus_ace5_pro)
+                  KERNEL_TIME='Mon Dec  8 04:00:43 UTC 2025'
+                ;;
+              oneplus_13 | oneplus_13t | oneplus_ace_6 | oneplus_pad_2 |realme_GT7 | realme_GT7pro_Speed | realme_GT8)
                   KERNEL_TIME='Wed Apr  8 15:08:30 UTC 2026'
                 ;;
               realme_GT7pro)
@@ -681,6 +687,15 @@ jobs:
           ESCAPED_SUFFIX=$(printf '%s\n' "$DEFAULT_SUFFIX" | sed 's:[\/&]:\\&:g')
           sudo sed -i "s/-4k/$ESCAPED_SUFFIX/g" ./common/arch/arm64/configs/gki_defconfig
           sed -i 's/${scm_version}//' ./common/scripts/setlocalversion
+          if [ "${{ env.DEVICES_NAME }}" = "oneplus_ace5_pro" ]; then
+            sudo sed -i 's/^SUBLEVEL = 118/SUBLEVEL = 89/' ./common/Makefile
+            sudo sed -i 's/^filechk_utsrelease = .*/filechk_utsrelease = 6.6.89-android15-8-g7e1f3c083cc6-abogki467167594-4k/' ./common/Makefile
+            grep -q '^SUBLEVEL = 89$' ./common/Makefile || { echo "FATAL: 无法设置内核 SUBLEVEL=89"; exit 1; }
+            echo CONFIG_LOCALVERSION="-android15-8-g7e1f3c083cc6-abogki467167594-4k" >> ./common/arch/arm64/configs/gki_defconfig
+            echo "[OK] 使用设备目标内核版本 6.6.89-android15-8-g7e1f3c083cc6-abogki467167594-4k"
+          fi
+          echo "KBUILD_BUILD_USER=kleaf" >> $GITHUB_ENV
+          echo "KBUILD_BUILD_HOST=build-host" >> $GITHUB_ENV
 
       - name: 📥 Start build timer (构建计时开始)
         run: 
