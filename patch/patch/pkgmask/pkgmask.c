@@ -1,50 +1,21 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * pkgmask v4.11 -- kernel-level app package / directory hiding
+ * pkgmask v4.15 -- kernel-level app package / directory hiding
  *
- * Why built-in: the hiding entry point for readdir is a strong
- * definition of pmk_filter_dirent() that overrides the __weak default
- * in fs/readdir.c.  The linker resolves the weak reference to this
- * strong symbol only when both live in vmlinux (CONFIG_PKGMASK=y),
- * which is why this driver is built-in and not an LKM.
- *
- * v4.6 changes (stable):
- *   - v4.11: binder.c injection and syscall-fallback code are FULLY
- *     removed (no inert params, no sysfs exposure, no kallsyms entries).
- *     Only readdir weak-hook + inode_permission/vfs_getattr kretprobes
- *     remain, minimizing detection surface.  hwid_spoof (read-only HWID
- *     interception) is preserved and initialized here.
- *   - readdir hiding via filldir64/filldir weak hook (zero-width
- *     immune, matches by parent dir (dev,ino) + entry name).
- *   - stat / open hiding via inode_permission + vfs_getattr kretprobes.
- *   - v4.9: target_paths tokens are trimmed of trailing whitespace/newline
- *     so echo/printf writes both work (echo appends '\n').
- *   - v4.9: /proc process-name hiding (hide_proc_enabled + hide_proc_names);
- *     PID-string entries resolved to task->comm for matching.
- *     hide_dirents/hook_getdents default to 1 so SUSFS guard's
- *     pkgmask_setup.sh (which does not write them) still gets readdir hiding.
- *     compatible with SUSFS Env Guard's pkgmask integration.
- *
- * Runtime configuration (live, no reboot):
- *   /sys/module/pkgmask/parameters/target_paths   e.g.
- *     /data/user/0/com.maple.detect,/data/user/0/bin.mt.plus.canary
- *   /sys/module/pkgmask/parameters/deny_uids      e.g. 10354
- *   /sys/module/pkgmask/parameters/allow_uids
- *   /sys/module/pkgmask/parameters/scope_mode     global|deny|allow
- *   /sys/module/pkgmask/parameters/hide_dirents   1|0
- *   /sys/module/pkgmask/parameters/hook_getdents  1|0 (readdir filter)
- *   /sys/module/pkgmask/parameters/hook_perm      1|0
- *   /sys/module/pkgmask/parameters/hook_getattr   1|0
- *   /sys/module/pkgmask/parameters/reload         write "1" to apply
- *   /sys/module/pkgmask/parameters/status         read-only
- *
- * At boot only no-op hooks are registered (empty target list); nothing
- * is hidden until configuration is applied via sysfs.
+ * v4.15 changes:
+ *   - proc_comm kretprobe hook point changed from vfs_read to ksys_read
+ *     Reason: vfs_read is LTO-inlined on GKI 6.6; the probe never fires.
+ *   - proc_comm_entry now converts fd to struct fd via __fdget and stores
+ *     the fd for the exit handler; exit handler releases with fdput.
+ *   - proc_comm data_size changed from sizeof(void*) to sizeof(struct fd).
  */
+
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/fs.h>
+#include <linux/file.h>
+#include <linux/fdtable.h>
 #include <linux/namei.h>
 #include <linux/path.h>
 #include <linux/dcache.h>
@@ -54,7 +25,6 @@
 #include <linux/kallsyms.h>
 #include <linux/string.h>
 #include <linux/statfs.h>
-#include <linux/fdtable.h>
 #include <linux/version.h>
 #include <linux/magic.h>
 #include <linux/pid.h>
@@ -110,7 +80,6 @@ module_param_string(target_paths, target_paths, sizeof(target_paths), 0600);
 MODULE_PARM_DESC(target_paths, "Comma-separated absolute paths to hide");
 
 
-/* SUSFS guard compatible: /proc process-name hiding (v4.9) */
 static bool hide_proc_enabled;
 module_param(hide_proc_enabled, bool, 0600);
 MODULE_PARM_DESC(hide_proc_enabled, "Hide /proc entries matching hide_proc_names (SUSFS guard)");
@@ -137,14 +106,10 @@ struct hidden_target {
 	unsigned long long ino;
 	char path[TARGET_TEXT_LEN];
 	bool inode_ok;
-	/* v3.2+: parent directory (dev, ino) + entry name for readdir filter */
 	dev_t parent_dev;
 	unsigned long long parent_ino;
 	char name[TARGET_TEXT_LEN];
 	bool parent_ok;
-	/* v4.7: last path component as package-name prefix — hides
-	 * /data/app/<rand>/<pkg>-<suffix> style entries whose random
-	 * directory name cannot be pre-resolved. */
 	char pkg[TARGET_TEXT_LEN];
 	bool have_pkg;
 };
@@ -160,15 +125,6 @@ static unsigned int allow_uid_count;
 
 /* --------------------------- helpers --------------------------- */
 
-/*
- * v4.12: /proc/<pid>/comm direct-read defense.
- *
- * process_hide filters /proc root getdents by PID->comm, but a detector
- * that brute-forces /proc/1..N and reads /proc/<pid>/comm directly still
- * sees the hidden comm. This kretprobe intercepts vfs_read() on that path
- * and returns 0 (EOF) so the caller reads an empty file.
- */
-
 static bool is_in_uid_list(const uid_t *list, unsigned int count, uid_t uid)
 {
 	unsigned int i;
@@ -177,17 +133,6 @@ static bool is_in_uid_list(const uid_t *list, unsigned int count, uid_t uid)
 			return true;
 	return false;
 }
-
-/*
- * 向上追溯 depth 层 real_parent，检查祖先链上是否有 deny_uids 里的 UID
- * 场景：检测方 su 后，root shell 的祖先仍可追溯到检测方进程
- *
- * 只做 real_parent 追溯（不做 cgroup），原因是：
- *   1) cgroup 需要 task_cgroup_path() 拿 cgroup_mutex，可能在某些内核
- *      持锁路径里被调用导致死锁
- *   2) real_parent 追溯用 rcu_dereference，纯读操作，无死锁风险
- *   3) 能挡住"检测方直接 su"的场景，这也是绝大多数检测工具的手法
- */
 
 static bool has_deny_ancestor(int depth)
 {
@@ -224,11 +169,8 @@ static bool should_hide_for_current(void)
 	uid = from_kuid(&init_user_ns, kuid);
 
 	if (active_scope == SCOPE_DENY) {
-		/* 快路径：直接命中 deny_uids（普通 APP 走这里，零开销） */
 		if (is_in_uid_list(deny_uid_list, deny_uid_count, uid))
 			return true;
-
-		/* 慢路径：仅在 hook_perm/hook_getattr 开启时才追溯祖先，层数 3 */
 		if (hook_perm || hook_getattr) {
 			if (has_deny_ancestor(3))
 				return true;
@@ -256,19 +198,6 @@ static bool is_target_inode(const struct inode *inode)
 	return false;
 }
 
-/*
- * Strong definition of the fs/readdir.c weak hook.  Called from
- * filldir64/filldir with (entry name, parent dir inode).  Returning
- * true skips the entry without writing it, so the listing stays
- * compact and offsets stay valid.  Zero-width immune: the check is by
- * parent (dev, ino) + exact entry name, never by string walking.
- *
- * v4.7: in addition to the exact parent+name match, an entry whose
- * name starts with the configured package name (followed by a name
- * separator / alnum) is hidden everywhere.  This covers Android
- * install dirs like /data/app/~~x==/<pkg>-<random> whose random
- * directory cannot be known ahead of time.
- */
 bool iterate_dir_filter(const char *name, const struct inode *dir)
 {
 	unsigned int i;
@@ -279,12 +208,6 @@ bool iterate_dir_filter(const char *name, const struct inode *dir)
 	if (!should_hide_for_current())
 		return false;
 
-	/* /proc process-name hiding:
-	 * name is the PID string (e.g. "1234"), not the process name.
-	 * Resolve PID -> task_struct->comm and compare against the list.
-	 * Only apply at the /proc root (i_ino == 1). kstrtoint avoids a
-	 * long->int truncation hazard in 64-bit builds.
-	 */
 	if (hide_proc_enabled && proc_name_count &&
 	    dir->i_sb && dir->i_sb->s_magic == PROC_SUPER_MAGIC &&
 	    dir->i_ino == 1) {
@@ -342,17 +265,6 @@ bool iterate_dir_filter(const char *name, const struct inode *dir)
 static struct kretprobe perm_kp;
 static struct kretprobe getattr_kp;
 
-/*
- * Safe pattern: entry stores the target pointer into ri->data; exit
- * rewrites only the return value (-ENOENT) for matching inodes.  We
- * never touch argument registers, so no crash surface inside the
- * probed function.
- *
- * inode_permission(struct mnt_idmap *idmap, struct inode *inode, int mask)
- *   -> inode is regs[1] on arm64.
- * vfs_getattr(const struct path *path, ...)
- *   -> path is regs[0] on arm64.
- */
 static int perm_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
 	if (!hide_dirents || !hook_perm || !target_count)
@@ -397,98 +309,119 @@ static int getattr_exit(struct kretprobe_instance *ri, struct pt_regs *regs)
 		regs->regs[0] = -ENOENT;
 	return 0;
 }
-/* v4.13: /proc/<pid>/comm direct-read defense (lazy, maxactive=32) */
+
+/* v4.15: proc_comm kretprobe hook on ksys_read (vfs_read is LTO-inlined) */
 static struct kretprobe proc_comm_kp;
 static bool proc_comm_hook_active;
 
 static int proc_comm_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
-    struct file *file;
-    struct dentry *dentry;
-    const char *name;
+	unsigned int fd;
+	struct fd f;
+	struct dentry *dentry;
+	const char *name;
 
-    if (!hide_proc_enabled || !proc_name_count)
-        return 0;
+	*(struct fd *)ri->data = (struct fd){ NULL, 0 };
 
-    /* UID 快筛：只对 deny_uids 生效，避免无关进程开销 */
-    if (active_scope == SCOPE_DENY) {
-        uid_t uid = from_kuid(&init_user_ns, current_uid());
-        if (!is_in_uid_list(deny_uid_list, deny_uid_count, uid))
-            return 0;
-    }
+	if (!hide_proc_enabled || !proc_name_count)
+		return 0;
 
-    file = (struct file *)regs->regs[0];
-    if (!file) return 0;
-    dentry = file->f_path.dentry;
-    if (!dentry) return 0;
+	if (active_scope == SCOPE_DENY) {
+		uid_t uid = from_kuid(&init_user_ns, current_uid());
+		if (!is_in_uid_list(deny_uid_list, deny_uid_count, uid))
+			return 0;
+	}
 
-    name = dentry->d_name.name;
-    if (strcmp(name, "comm") != 0) return 0;
+	fd = (unsigned int)regs->regs[0];
+	f = __to_fd(__fdget(fd));
+	if (!f.file)
+		return 0;
 
-    /* 父目录名必须是 PID 数字 */
-    if (dentry->d_parent) {
-        const char *pname = dentry->d_parent->d_name.name;
-        if (pname[0] >= '1' && pname[0] <= '9') {
-            *(struct dentry **)ri->data = dentry;
-            return 0;
-        }
-    }
-    return 0;
+	dentry = f.file->f_path.dentry;
+	if (!dentry) {
+		fdput(f);
+		return 0;
+	}
+
+	name = dentry->d_name.name;
+	if (strcmp(name, "comm") != 0) {
+		fdput(f);
+		return 0;
+	}
+
+	if (dentry->d_parent) {
+		const char *pname = dentry->d_parent->d_name.name;
+		if (pname[0] >= '1' && pname[0] <= '9') {
+			*(struct fd *)ri->data = f;
+			return 0;
+		}
+	}
+	fdput(f);
+	return 0;
 }
 
 static int proc_comm_exit(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
-    struct dentry *dentry = *(struct dentry **)ri->data;
-    struct task_struct *task;
-    int lpid;
-    unsigned int j;
+	struct fd f = *(struct fd *)ri->data;
+	struct dentry *dentry;
+	struct task_struct *task;
+	int lpid;
+	unsigned int j;
 
-    if (!dentry) return 0;
+	if (!f.file)
+		return 0;
 
-    if (kstrtoint(dentry->d_parent->d_name.name, 10, &lpid) != 0 || lpid <= 0)
-        return 0;
+	dentry = f.file->f_path.dentry;
+	if (!dentry || !dentry->d_parent)
+		goto out;
 
-    rcu_read_lock();
-    task = find_task_by_vpid(lpid);
-    if (task) {
-        for (j = 0; j < proc_name_count; j++) {
-            if (strcmp(task->comm, proc_names[j]) == 0) {
-                rcu_read_unlock();
-                /* 隐藏：返回 0 (EOF) */
-                regs->regs[0] = 0;
-                return 0;
-            }
-        }
-    }
-    rcu_read_unlock();
-    return 0;
+	if (kstrtoint(dentry->d_parent->d_name.name, 10, &lpid) != 0 || lpid <= 0)
+		goto out;
+
+	rcu_read_lock();
+	task = find_task_by_vpid(lpid);
+	if (task) {
+		for (j = 0; j < proc_name_count; j++) {
+			if (strcmp(task->comm, proc_names[j]) == 0) {
+				rcu_read_unlock();
+				regs->regs[0] = 0;
+				goto out;
+			}
+		}
+	}
+	rcu_read_unlock();
+out:
+	fdput(f);
+	*(struct fd *)ri->data = (struct fd){ NULL, 0 };
+	return 0;
 }
 
 static void register_proc_comm_hook(void)
 {
-    int ret;
-    if (proc_comm_hook_active) return;
-    memset(&proc_comm_kp, 0, sizeof(proc_comm_kp));
-    proc_comm_kp.kp.symbol_name = "vfs_read";
-    proc_comm_kp.entry_handler = proc_comm_entry;
-    proc_comm_kp.handler = proc_comm_exit;
-    proc_comm_kp.data_size = sizeof(void *);
-    proc_comm_kp.maxactive = 32;
-    ret = register_kretprobe(&proc_comm_kp);
-    if (ret < 0) {
-        pr_info(PM_LOG_PREFIX "vfs_read (comm) probe unavailable (%d)\n", ret);
-        memset(&proc_comm_kp, 0, sizeof(proc_comm_kp));
-        return;
-    }
-    proc_comm_hook_active = true;
+	int ret;
+	if (proc_comm_hook_active) return;
+	memset(&proc_comm_kp, 0, sizeof(proc_comm_kp));
+	/* v4.15: ksys_read instead of vfs_read (vfs_read is LTO-inlined) */
+	proc_comm_kp.kp.symbol_name = "ksys_read";
+	proc_comm_kp.entry_handler = proc_comm_entry;
+	proc_comm_kp.handler = proc_comm_exit;
+	proc_comm_kp.data_size = sizeof(struct fd);
+	proc_comm_kp.maxactive = 64;
+	ret = register_kretprobe(&proc_comm_kp);
+	if (ret < 0) {
+		pr_info(PM_LOG_PREFIX "ksys_read (comm) probe unavailable (%d)\n", ret);
+		memset(&proc_comm_kp, 0, sizeof(proc_comm_kp));
+		return;
+	}
+	proc_comm_hook_active = true;
 }
 
 static void unregister_proc_comm_hook(void)
 {
-    if (proc_comm_hook_active)
-        unregister_kretprobe(&proc_comm_kp);
-    proc_comm_hook_active = false;
-    memset(&proc_comm_kp, 0, sizeof(proc_comm_kp));
+	if (proc_comm_hook_active)
+		unregister_kretprobe(&proc_comm_kp);
+	proc_comm_hook_active = false;
+	memset(&proc_comm_kp, 0, sizeof(proc_comm_kp));
 }
 
 static int register_perm_getattr_hooks(void)
@@ -523,7 +456,6 @@ static int register_perm_getattr_hooks(void)
 
 static void unregister_perm_getattr_hooks(void)
 {
-
 	if (perm_kp.kp.symbol_name)
 		unregister_kretprobe(&perm_kp);
 	if (getattr_kp.kp.symbol_name)
@@ -531,7 +463,6 @@ static void unregister_perm_getattr_hooks(void)
 	memset(&perm_kp, 0, sizeof(perm_kp));
 	memset(&getattr_kp, 0, sizeof(getattr_kp));
 }
-
 
 /* --------------------------- target resolution --------------------------- */
 
@@ -572,7 +503,6 @@ static int add_target_path(const char *path_str)
 	strscpy(targets[target_count].path, path_str,
 		sizeof(targets[target_count].path));
 
-	/* parent dir (dev, ino) + entry name for the readdir filter */
 	if (path.dentry->d_parent) {
 		pinode = d_inode(path.dentry->d_parent);
 		if (pinode && pinode->i_sb) {
@@ -588,7 +518,6 @@ static int add_target_path(const char *path_str)
 
 	path_put(&path);
 
-	/* alias spellings: /data/data/X -> /data/user/0/X and back */
 	if (strncmp(path_str, "/data/data/", 11) == 0) {
 		char alias[TARGET_TEXT_LEN];
 		snprintf(alias, sizeof(alias), "/data/user/0/%s",
@@ -671,7 +600,6 @@ static int resolve_target_paths(const char *buf)
 		if (comma)
 			*comma = '\0';
 		tok = tok + strspn(tok, " \t");
-		/* v4.9: strip trailing whitespace/newline (echo writes '\n') */
 		{
 			size_t tl = strlen(tok);
 			while (tl > 0 && (tok[tl - 1] == '\n' || tok[tl - 1] == '\r' ||
@@ -782,13 +710,12 @@ static void parse_hide_proc_names(const char *buf)
 
 static void unregister_all_hooks(void)
 {
-    unregister_perm_getattr_hooks();
-    unregister_proc_comm_hook();
+	unregister_perm_getattr_hooks();
+	unregister_proc_comm_hook();
 }
 
 static int apply_config(void)
 {
-	/* echo writes '\n'; trim all string params before parsing */
 	trim_param(scope_mode);
 	trim_param(deny_uids);
 	trim_param(allow_uids);
@@ -820,11 +747,11 @@ static int apply_config(void)
 
 	if (hook_perm || hook_getattr)
 		register_perm_getattr_hooks();
-	
+
 	if (hide_proc_enabled && proc_name_count)
-        register_proc_comm_hook();
-    else
-        unregister_proc_comm_hook();
+		register_proc_comm_hook();
+	else
+		unregister_proc_comm_hook();
 
 	pr_debug(PM_LOG_PREFIX "config applied: scope=%s targets=%u deny=%u allow=%u "
 		"dirents=%d getdents=%d perm=%d getattr=%d prochide=%d proccount=%u\n",
@@ -861,10 +788,6 @@ module_param_cb(reload, &reload_ops, NULL, 0600);
 
 static int status_get(char *buffer, const struct kernel_param *kp)
 {
-	/* 安全：不暴露模块版本号和具体 hook 清单
-	 * 旧版输出 "pkgmask v4.11" 版本号 + hook_perm/hook_getattr 等开关
-	 * 检测方可按字符串匹配识别模块，或根据 hook 清单判断隐藏能力
-	 * 新版只保留"是否工作"的最基本信息 */
 	return scnprintf(buffer, PAGE_SIZE,
 			 "scope=%s targets=%u\n"
 			 "enabled=%d\n",
@@ -881,29 +804,11 @@ module_param_cb(status, &status_ops, NULL, 0400);
 
 static int __init xk7a9f_init(void)
 {
-	/*
-	 * v4.14: 启动时不注册任何 kretprobe。
-	 *
-	 * inode_permission / vfs_getattr 是 VFS 最热的函数，每次文件访问
-	 * 都会经过。在开机早期无条件挂 kretprobe，会让 init 阶段的权限
-	 * 检查 / stat 调用多两次陷入（保存 pt_regs、return address
-	 * trampoline、entry/exit handler），足以把一加 Bootloader 的启动
-	 * 时间窗口拖破 → 判启动失败 → 卡黄字无限重启。
-	 *
-	 * v4.13 已经处理了 vfs_read 的惰性化，但 inode_permission /
-	 * vfs_getattr 这两个更热的 kretprobe 仍然在 init 里无条件注册。
-	 * v4.14 一并惰性化：只有用户态通过 sysfs 写入 hook_perm=1 或
-	 * hook_getattr=1 并触发 reload，apply_config() 才按需注册。
-	 *
-	 * SUSFS Env Guard 的 pkgmask_setup.sh 会在 sys.boot_completed==1
-	 * 之后写 hook_perm=1 / hook_getattr=1 并触发 reload，功能不受影响，
-	 * 只是延后到系统稳定之后注册。
-	 */
 #ifdef CONFIG_PKGMASK_HWID
 	xw3e8b_init();
 #endif
 
-	pr_debug(PM_LOG_PREFIX "v4.14 built-in initialized (deferred kretprobe registration)\n");
+	pr_debug(PM_LOG_PREFIX "v4.15 built-in initialized (deferred kretprobe registration)\n");
 	return 0;
 }
 
@@ -921,4 +826,4 @@ module_exit(xk7a9f_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("pkgmask");
-MODULE_DESCRIPTION("pkgmask v4.11 kernel-level package hiding (built-in)");
+MODULE_DESCRIPTION("pkgmask v4.15 kernel-level package hiding (built-in, ksys_read hook)");
