@@ -6,6 +6,7 @@
 #   - 支持 --once：处理一次 action + 刷新 status 后退出（WebUI 即时反馈用）
 #   - 主循环每秒检查 action.txt，缩短响应延迟
 #   - 新增 save_hide 动作：A/B 一次性保存，避免两次写入互相覆盖
+#   - 新增 restore_all 动作：恢复全部真值（hwid + props）
 #   - idle 写 status 间隔缩短为 3 秒
 
 . "${0%/*}/lib_common.sh"
@@ -251,9 +252,16 @@ handle_action() {
         props_on) set_config spoof_props_enabled 1; sh "$MODDIR/tools/props_spoof.sh" apply ;;
         props_off) set_config spoof_props_enabled 0; sh "$MODDIR/tools/props_spoof.sh" restore ;;
         android_on) set_config spoof_android_id 1; sh "$MODDIR/tools/randomize.sh" apply ;;
-        android_off) set_config spoof_android_id 0; sh "$MODDIR/tools/randomize.sh" restore_aid; sh "$MODDIR/tools/randomize.sh" apply ;;
+        android_off) set_config spoof_android_id 0; sh "$MODDIR/tools/randomize.sh" restore; sh "$MODDIR/tools/randomize.sh" apply ;;
         hwid_on) set_config spoof_hwid_enabled 1; sh "$MODDIR/tools/randomize.sh" apply ;;
         hwid_off) set_config spoof_hwid_enabled 0; sh "$MODDIR/tools/randomize.sh" apply ;;
+        # v6.4-opt2: 恢复全部真值（hwid + props），供 WebUI 一键恢复按钮调用
+        restore_all)
+            sh "$MODDIR/tools/randomize.sh" restore
+            sh "$MODDIR/tools/props_spoof.sh" restore
+            set_config spoof_hwid_enabled 0
+            set_config spoof_props_enabled 0
+            ;;
         id_apps_set:*)
             local pkgs="${a#id_apps_set:}" uids="" p u
             for p in $(echo "$pkgs" | tr ',' ' '); do
@@ -286,7 +294,6 @@ handle_action() {
             sh "$MODDIR/tools/run_verify.sh" "$tgts" >/dev/null 2>&1
             ;;
         save_hide:*)
-            # v6.4: 合并保存 —— A/B 一次性写入，避免两次 action 互相覆盖
             local payload="${a#save_hide:}"
             local listA="${payload%%|*}"
             local listB="${payload#*|}"
