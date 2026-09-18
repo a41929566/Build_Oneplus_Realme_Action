@@ -6,14 +6,7 @@
  * v1.1 changes:
  *   - hook point changed from vfs_read to ksys_read
  *     Reason: on GKI 6.6 with LTO+O2, vfs_read is inlined into ksys_read.
- *     A kretprobe on vfs_read registers but never fires. ksys_read is a
- *     syscall entry point referenced from sys_call_table, so it can never
- *     be inlined.
- *   - entry handler now converts fd (arg0 of ksys_read) to struct file *
- *     via __fdget (non-blocking), holds the reference until exit, and
- *     releases with fdput.
- *   - ksys_read signature: (unsigned int fd, char __user *buf, size_t count)
- *     so arg0 = fd, arg1 = buf (same as before for buf).
+ *   - entry handler converts fd (arg0 of ksys_read) to struct file * via __fdget
  */
 
 #if defined(__has_include)
