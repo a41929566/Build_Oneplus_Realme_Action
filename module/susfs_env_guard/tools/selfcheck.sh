@@ -31,7 +31,7 @@ echo "===== SUSFS Env Guard v6.4 自检 $(date) ====="
 # 1. 文件完整性
 # ============================================================
 echo "--- 文件完整性 ---"
-for f in post-fs-data.sh service.sh customize.sh module.prop sepolicy.rule \
+for f in post-fs-data.sh service.sh module.prop sepolicy.rule \
          tools/lib_common.sh tools/props_spoof.sh tools/randomize.sh \
          tools/pkgmask_setup.sh tools/appops_setup.sh tools/daemon_loop.sh \
          tools/process_hide.sh tools/run.sh tools/susfs_fix.sh \
