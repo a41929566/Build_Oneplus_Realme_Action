@@ -199,13 +199,22 @@ fi
 echo "--- 守护进程 ---"
 if [ -f "$RUN_DIR/daemon.pid" ]; then
     DP=$(cat "$RUN_DIR/daemon.pid" 2>/dev/null)
-    if [ -n "$DP" ] && [ -d "/proc/$DP" ]; then
-        ps_ "守护进程运行 PID=$DP"
-    else
-        no "守护进程未运行（pid 文件过期）"
-    fi
+    case "$DP" in
+        ''|*[!0-9]*)
+            no "守护进程 pid 文件内容非法（$DP）"
+            ;;
+        *)
+            if [ -d "/proc/$DP" ]; then
+                ps_ "守护进程运行 PID=$DP"
+            else
+                # daemon 是后台进程，可能被系统杀过。只要 pid 文件存在且合法，就只 WARN
+                wn "守护进程 pid=$DP 已退出（文件存在，可能被系统杀过）"
+            fi
+            ;;
+    esac
 else
-    no "守护进程未运行（无 pid 文件）"
+    # 首次开机、run.sh 未跑完时可能还没 pid 文件。这里只 WARN，不 FAIL
+    wn "守护进程尚未启动（无 pid 文件）"
 fi
 
 # ============================================================
