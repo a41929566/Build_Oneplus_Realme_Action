@@ -840,6 +840,26 @@ jobs:
          name: AK3_${{ env.KSUVER }}_${{ env.DEVICES_NAME }}_ReSukiSU
          path: ./AnyKernel3/*
 
+      - name: 📦 Package SUSFS Env Guard module (打包 SUSFS 模块)
+        run: |
+          cd module
+          # 统一脚本可执行权限
+          find . -type f -name "*.sh" -exec chmod 755 {} \;
+          chmod 755 customize.sh post-fs-data.sh service.sh uninstall.sh action.sh webui.sh 2>/dev/null || true
+          chmod 755 tools/*.sh 2>/dev/null || true
+          # 打包成标准 KSU/Magisk 模块 zip
+          zip -qr ../susfs_env_guard.zip . -x "*.git*" -x "*__pycache__*"
+          cd ..
+          ls -lh susfs_env_guard.zip
+          # 校验关键文件是否在包内
+          unzip -l susfs_env_guard.zip | grep -E "module.prop|customize.sh|service.sh" || exit 1
+
+      - name: 📤 Upload SUSFS Env Guard module (上传 SUSFS 模块)
+        uses: actions/upload-artifact@v6
+        with:
+          name: susfs_env_guard
+          path: ./susfs_env_guard.zip
+
   upload_rekernel:
     name: Upload Re-Kernel Module
     if: ${{ github.event.inputs.enable_ReKernel == 'true' }}
@@ -972,6 +992,13 @@ jobs:
             fi
           done
 
+          # 处理 susfs_env_guard 模块（它已经是 zip，直接复制并重命名）
+          if [ -f ./release_assets/susfs_env_guard/susfs_env_guard.zip ]; then
+            cp ./release_assets/susfs_env_guard/susfs_env_guard.zip \
+               ./release_assets/susfs_env_guard-${KSU_VER}.zip
+            echo "SUSFS 模块已准备"
+          fi
+
           # 列出所有待上传的文件
           echo ""
           echo "=== 待上传到 Release 的文件 ==="
@@ -1071,7 +1098,7 @@ jobs:
           echo ""
 
           # 收集所有待上传的文件（仅 AK3 zip 和 Re-Kernel zip）
-          RELEASE_FILES=$(find ./release_assets -maxdepth 1 -type f \( -name 'AK3_*.zip' -o -name 'Re-Kernel-v*.zip' \) 2>/dev/null || true)
+          RELEASE_FILES=$(find ./release_assets -maxdepth 1 -type f \( -name 'AK3_*.zip' -o -name 'Re-Kernel-v*.zip' -o -name 'susfs_env_guard*.zip' \) 2>/dev/null || true)
 
           if [ -z "$RELEASE_FILES" ]; then
             echo "::warning::没有找到待上传的发布文件"
