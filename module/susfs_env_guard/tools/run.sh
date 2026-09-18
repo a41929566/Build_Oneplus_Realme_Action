@@ -69,14 +69,7 @@ if [ -f "$MODDIR/tools/appops_setup.sh" ]; then
     log_file "<-- appops_setup.sh rc=$?"
 fi
 
-# ---------- 9. 自检并写状态文件 ----------
-if [ -f "$MODDIR/tools/selfcheck.sh" ]; then
-    log_file "--> selfcheck.sh"
-    sh "$MODDIR/tools/selfcheck.sh" > "$RUN_DIR/selfcheck.txt" 2>&1
-    log_file "<-- selfcheck.sh rc=$?"
-fi
-
-# ---------- 10. 启动守护进程（单实例）----------
+# ---------- 9. 启动守护进程（单实例）----------
 # v6.4: setsid 在部分 Android sh 下静默失败，改用 nohup
 if [ -f "$MODDIR/tools/daemon_loop.sh" ]; then
     if [ -f "$RUN_DIR/daemon.pid" ]; then
@@ -89,6 +82,15 @@ if [ -f "$MODDIR/tools/daemon_loop.sh" ]; then
     fi
     nohup sh "$MODDIR/tools/daemon_loop.sh" >> "$RUN_DIR/daemon.boot.log" 2>&1 &
     log_file "daemon_loop.sh started (nohup)"
+    # 等 daemon 写完 pid 文件再跑 selfcheck，避免误报"未运行"
+    sleep 3
+fi
+
+# ---------- 10. 自检并写状态文件（必须在 daemon 启动之后）----------
+if [ -f "$MODDIR/tools/selfcheck.sh" ]; then
+    log_file "--> selfcheck.sh"
+    sh "$MODDIR/tools/selfcheck.sh" > "$RUN_DIR/selfcheck.txt" 2>&1
+    log_file "<-- selfcheck.sh rc=$?"
 fi
 
 log_file "=== run.sh done ==="
