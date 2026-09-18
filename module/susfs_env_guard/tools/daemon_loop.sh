@@ -219,7 +219,7 @@ write_status() {
     ' "$RUN_DIR/selfcheck_items.tsv" 2>/dev/null)
     [ -z "$sc_items" ] && sc_items="[]"
 
-    local tmp="$STATUS_FILE.tmp"
+    local tmp="${STATUS_FILE}.tmp.$$"
     {
       echo "{"
       echo "  \"ts\": $(date +%s),"
