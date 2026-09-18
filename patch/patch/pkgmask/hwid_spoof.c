@@ -1,51 +1,19 @@
-/* Force rebuild v3 - ccache cleared 2026-09-15 18:00 */
+/* Force rebuild v4 - ksys_read hook (vfs_read inlined by LTO) */
 // SPDX-License-Identifier: GPL-2.0
 /*
- * hwid_spoof -- kernel-level read-only hardware ID spoofing (v1.0)
+ * hwid_spoof -- kernel-level read-only hardware ID spoofing (v1.1)
  *
- * Goal
- * ----
- *   Some device identifiers are read straight from read-only kernel/sysfs
- *   nodes and therefore cannot be changed from userspace (resetprop has no
- *   effect on them):
- *
- *     /sys/devices/soc0/serial_number     Qualcomm SoC serial
- *     /proc/cpuinfo                       "Serial:" line
- *     /sys/block/<block>/device/cid       eMMC/UFS CID
- *     /sys/class/net/<iface>/address     MAC reported to userspace
- *
- *   Detectors (e.g. Maple) read these with plain open()+read() and cross
- *   check them.  This driver intercepts the *returned bytes* of read(2) for
- *   exactly those paths and substitutes a stable, self-consistent fake
- *   value.  It never touches the real hardware register / dev_addr, so the
- *   radio, Wi-Fi and Bluetooth keep working normally -- only the bytes an
- *   app receives are changed.
- *
- * Why this is crash-safe / boot-safe
- * ----------------------------------
- *   - The ONLY hook is a dynamic kretprobe on the stable symbol vfs_read().
- *     There is no strong-symbol override and no edit of any core source
- *     file.  If the symbol cannot be found the probe fails to register and
- *     boot proceeds normally.
- *   - Path classification uses already-resolved dentry names in memory
- *     (no d_path, no allocation, no sleeping in the entry handler).
- *   - Userspace buffers are touched only with the *_inatomic variants and
- *     a temporary GFP_ATOMIC scratch buffer; on any anomaly the original
- *     bytes pass through untouched.
- *   - Every substitution is length-preserving (same byte count, same return
- *     value), so file offsets and callers are never disturbed.
- *   - Fake values are generated once and then held constant, so repeated
- *     reads always return the same value (no self-inconsistency).
- *
- * Runtime control (same sysfs module as pkgmask):
- *   /sys/module/pkgmask/parameters/hwid_enabled     1|0
- *   /sys/module/pkgmask/parameters/hwid_uids        csv, empty = global
- *   /sys/module/pkgmask/parameters/hwid_soc_serial  fake SoC serial (hex)
- *   /sys/module/pkgmask/parameters/hwid_cid         fake 32-hex CID
- *   /sys/module/pkgmask/parameters/hwid_wlan_mac    fake wlan MAC xx:..
- *   /sys/module/pkgmask/parameters/hwid_bt_mac      fake BT  MAC xx:..
- *   /sys/module/pkgmask/parameters/hwid_cpu_serial  fake 16-hex cpuinfo
- *   /sys/module/pkgmask/parameters/hwid_status      read-only
+ * v1.1 changes:
+ *   - hook point changed from vfs_read to ksys_read
+ *     Reason: on GKI 6.6 with LTO+O2, vfs_read is inlined into ksys_read.
+ *     A kretprobe on vfs_read registers but never fires. ksys_read is a
+ *     syscall entry point referenced from sys_call_table, so it can never
+ *     be inlined.
+ *   - entry handler now converts fd (arg0 of ksys_read) to struct file *
+ *     via __fdget (non-blocking), holds the reference until exit, and
+ *     releases with fdput.
+ *   - ksys_read signature: (unsigned int fd, char __user *buf, size_t count)
+ *     so arg0 = fd, arg1 = buf (same as before for buf).
  */
 
 #if defined(__has_include)
@@ -62,6 +30,8 @@
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/fs.h>
+#include <linux/file.h>
+#include <linux/fdtable.h>
 #include <linux/dcache.h>
 #include <linux/magic.h>
 #include <linux/cred.h>
@@ -93,8 +63,6 @@ enum hwid_kind {
 	KIND_CPUINFO,
 };
 
-/* Configuration is applied explicitly by the module; never spoof at boot
- * before the per-feature userspace policy has been evaluated. */
 static bool hwid_enabled;
 static int hwid_enabled_set(const char *buf, const struct kernel_param *kp);
 static int hwid_enabled_get(char *buffer, const struct kernel_param *kp);
@@ -358,8 +326,8 @@ static bool rewrite_cpuinfo(char *buf, size_t len)
 
 static bool rewrite_mac_scan(char *buf, size_t len, const char *mac)
 {
-    size_t i;
-    bool changed = false;
+	size_t i;
+	bool changed = false;
 
 	if (!mac || strlen(mac) < 12)
 		return false;
@@ -486,6 +454,8 @@ static enum hwid_kind classify(struct file *file)
 struct hwid_hit {
 	char __user *buf;
 	enum hwid_kind kind;
+	struct fd f;
+	bool f_valid;
 };
 
 static struct kretprobe vfs_read_kp;
@@ -521,21 +491,30 @@ static int hwid_enabled_get(char *buffer, const struct kernel_param *kp)
 static int hwid_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
 	struct hwid_hit *hit = (struct hwid_hit *)ri->data;
-	struct file *file;
+	unsigned int fd;
+	struct fd f;
 	enum hwid_kind kind;
 
 	hit->buf = NULL;
 	hit->kind = KIND_NONE;
+	hit->f_valid = false;
 
 	if (!hwid_enabled)
 		return 0;
-	file = (struct file *)regs->regs[0];
-	if (!file)
-		return 0;
-	kind = classify(file);
-	if (kind == KIND_NONE || !hwid_uid_match())
+
+	fd = (unsigned int)regs->regs[0];
+	f = __to_fd(__fdget(fd));
+	if (!f.file)
 		return 0;
 
+	kind = classify(f.file);
+	if (kind == KIND_NONE || !hwid_uid_match()) {
+		fdput(f);
+		return 0;
+	}
+
+	hit->f = f;
+	hit->f_valid = true;
 	hit->buf = (char __user *)regs->regs[1];
 	hit->kind = kind;
 	return 0;
@@ -548,18 +527,20 @@ static int hwid_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 	char *tmp;
 	bool changed = false;
 
-	if (!hit->buf || hit->kind == KIND_NONE)
+	if (!hit->f_valid)
 		return 0;
+
 	n = (long)regs->regs[0];
 	if (n <= 0 || n > HWID_MAX_BYTES)
-		return 0;
+		goto out;
 
 	tmp = kmalloc(n, GFP_ATOMIC);
 	if (!tmp)
-		return 0;
+		goto out;
+
 	if (__copy_from_user_inatomic(tmp, hit->buf, n)) {
 		kfree(tmp);
-		return 0;
+		goto out;
 	}
 
 	switch (hit->kind) {
@@ -585,6 +566,9 @@ static int hwid_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 	if (changed && __copy_to_user_inatomic(hit->buf, tmp, n))
 		pr_info_ratelimited(HW_LOG_PREFIX "write-back skipped\n");
 	kfree(tmp);
+out:
+	fdput(hit->f);
+	hit->f_valid = false;
 	return 0;
 }
 
@@ -628,8 +612,6 @@ static void hwid_refresh_fixed(void)
 
 static int hwid_status_get(char *buffer, const struct kernel_param *kp)
 {
-	/* 安全：只暴露运行状态，不输出任何假值或 hook 类型
-	 * 旧版输出假值和 hook 类型，可被 root 检测工具一次读取全貌 */
 	return scnprintf(buffer, PAGE_SIZE,
 		"enabled=%d hook_active=%d scope_uids=%u\n",
 		hwid_enabled ? 1 : 0, hwid_hook_active ? 1 : 0, hwid_uid_count);
@@ -661,14 +643,15 @@ static int hwid_hook_register(void)
 	if (hwid_hook_active)
 		return 0;
 	memset(&vfs_read_kp, 0, sizeof(vfs_read_kp));
-	vfs_read_kp.kp.symbol_name = "vfs_read";
+	/* v1.1: ksys_read instead of vfs_read (vfs_read is LTO-inlined) */
+	vfs_read_kp.kp.symbol_name = "ksys_read";
 	vfs_read_kp.handler = hwid_handler;
 	vfs_read_kp.entry_handler = hwid_entry;
 	vfs_read_kp.data_size = sizeof(struct hwid_hit);
-	vfs_read_kp.maxactive = 64;
+	vfs_read_kp.maxactive = 512;
 	ret = register_kretprobe(&vfs_read_kp);
 	if (ret < 0) {
-		pr_info(HW_LOG_PREFIX "vfs_read probe unavailable (%d)\n", ret);
+		pr_info(HW_LOG_PREFIX "ksys_read probe unavailable (%d)\n", ret);
 		memset(&vfs_read_kp, 0, sizeof(vfs_read_kp));
 		return ret;
 	}
