@@ -121,7 +121,7 @@ input:focus{border-color:var(--primary)}
 
 <header>
   <h1>SUSFS Env Guard</h1>
-  <div class="sub">v3.0 · 内核级伪装 · <span id="liveTag">连接中…</span></div>
+  <div class="sub">v6.4 · 内核级伪装 · <span id="liveTag">连接中…</span></div>
 </header>
 
 <div class="tabs">
@@ -177,6 +177,8 @@ input:focus{border-color:var(--primary)}
     <button class="btn primary" onclick="act('hwid_on')">一键伪装</button>
     <button class="btn danger" onclick="act('hwid_off')">暂停伪装</button>
   </div>
+  <button class="btn danger" onclick="restoreAll()">恢复全部真值</button>
+  <div class="hint">「恢复全部真值」会清除硬件 ID、属性、Android ID 的全部伪装，回到设备原始状态。恢复后 hwid/props 开关会关闭，需重新点「一键伪装」才会重新生效。</div>
   <div class="card">
     <h3>生效 App（仅勾选 App 读到假值）</h3>
     <input type="search" id="searchIdApp" placeholder="搜索包名…" oninput="renderIdApps()">
@@ -287,7 +289,6 @@ async function shExec(cmd){
   }catch(e){ return ""; }
 }
 
-/* v3.1: act() 后立即触发一次 daemon --once，让 UI 尽快看到新状态 */
 async function act(action){
   await shExec(`echo "${action}" > ${ACTION_FILE}`);
   shExec(`(sh ${DAEMON} --once >/dev/null 2>&1 &)`);
@@ -301,6 +302,11 @@ function toast(m){
   const t=document.getElementById("toast");
   t.textContent=m; t.classList.add("show");
   clearTimeout(t._t); t._t=setTimeout(()=>t.classList.remove("show"), 1600);
+}
+
+function restoreAll(){
+  if(!confirm("确认恢复全部真值？这会关闭硬件 ID 和属性伪装。")) return;
+  act("restore_all");
 }
 
 document.querySelectorAll(".tab").forEach(t=>t.onclick=()=>{
@@ -392,8 +398,6 @@ function render(){
   setText("pm_hg", pm.hook_getdents||"–", pm.hook_getdents==="1"?"ok":"bad");
   setText("pm_hd", pm.hide_dirents||"–", pm.hide_dirents==="1"?"ok":"bad");
 
-  /* v3.1: 只在首次渲染时从内核状态恢复 selA/selB，之后由用户手动管理，
-     避免用户主动清空后又被内核状态覆盖回来 */
   if(!selAInitialized){
     if(pm.targets) pm.targets.split(/\\s+/).forEach(x=>x&&selA.add(x));
     selAInitialized = true;
@@ -485,7 +489,6 @@ function toggleB(p,on){
   document.getElementById("countB").textContent = selB.size;
 }
 
-/* v3.1: 合并保存，A/B 一次性下发，避免两次 action 互相覆盖 */
 function saveHide(){
   const listA = [...selA].join(",");
   const listB = [...selB].join(",");
