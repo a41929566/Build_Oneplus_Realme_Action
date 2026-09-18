@@ -11,12 +11,18 @@
 #  ⚠️ 严禁在 spoof.conf 里添加任何 ro.boot.* 属性（会导致无限重启）
 # ============================================================
 
+# ============================================================
+# ① 功能总开关
+# ============================================================
 spoof_props_enabled=1
 spoof_hwid_enabled=1
 spoof_android_id=0
 spoof_pkgmask_enabled=1
 spoof_process_hide_enabled=1
 
+# ============================================================
+# ② SUSFS 内核级伪装
+# ============================================================
 SPOOF_BOOTCONFIG=1
 SPOOF_OPEN_REDIRECT=1
 SPOOF_CMDLINE='androidboot.verifiedbootstate=green androidboot.vbmeta.device_state=locked androidboot.selinux=enforcing oplusboot.verifiedbootstate=green'
@@ -25,43 +31,70 @@ PROP_VBSTATE=green
 PROP_DEVICE_STATE=locked
 PROP_FLASH_LOCKED=1
 
+# ============================================================
+# ③ 硬件 ID 单项控制
+# ============================================================
 spoof_wifi_mac=0
 spoof_bt_mac=0
+# 留空 = 对所有进程生效（含 root）；填 UID 列表则只对指定进程生效
 hwid_uids=""
 
+# ============================================================
+# ④ pkgmask 应用隐藏
+# ============================================================
 pkgmask_scope=deny
 pkgmask_extra_paths=""
 
+# ============================================================
+# ⑤ 进程隐藏
+# ============================================================
+# 隐藏列表由 WebUI 写入 /data/adb/susfs_env_guard/hidden_procs.txt
+# 内核侧 pkgmask 的 hide_proc_names 节点读取
+
+# ============================================================
+# ⑥ SUSFS 辅助能力
+# ============================================================
 SPOOF_AVC_LOG=1
 SPOOF_HIDE_SUS_MNTS=1
 SPOOF_KSTAT_TMP=1
 CLEAN_TMP=1
 SPOOF_PATH_HIDE=1
 
-# v6.4-opt1: 递归隐藏 ksu/modules 子目录，减少检测点
-# 注意：会让 sus_path 列表从十几条膨胀到几十条。内核 MAX_HIDE_TARGETS=64，
-# 若超过会在 dmesg 里报 add_target failed，不影响开机，只是部分路径不隐藏。
+# 递归隐藏 ksu/modules 子目录
+# ⚠️ 会让 sus_path 列表膨胀。内核 MAX_HIDE_TARGETS=64，超过部分注册失败但不影响开机
 RECURSIVE_HIDE=1
 
-PATH_HIDE_EXTRA=
+# v6.4-opt2: 精确追加隐藏路径（空格分隔，存在才注册）
+# 覆盖 PIF / Teesimulator 系列 / Zygisk 系列
+PATH_HIDE_EXTRA="/data/adb/modules/playintegrityfix /data/adb/modules/teesimulator /data/adb/modules/teesimulator-rs /data/adb/modules/zygisk-next /data/adb/modules/zygisk-assistant /data/adb/modules/rezygisk /data/adb/modules/zygisksu /data/adb/modules/tricky_store /data/adb/pif.json /data/adb/tricky_store"
 
-# v6.4-opt1: 隐藏本模块目录自身（模块名也是一个检测特征）
+# 隐藏本模块目录自身
 HIDE_MODULE_PATH=1
 
+# ============================================================
+# ⑦ 期望值（自检对比用，不影响伪装）
+# ============================================================
 UNAME_FROM_SLOT=1
 EXPECTED_UNAME=
 EXPECTED_COMPILER=
 EXPECTED_OSRELEASE=
 AUTO_CAPTURE=1
 
+# ============================================================
+# ⑧ 运行时行为
+# ============================================================
 CLEANUP_LEGACY=1
 CLEANUP_RUNTIME=1
 log_level=2
 log_max_kb=512
 
+# v6.4: idle 写 status 间隔缩短为 3 秒，UI 反应更快
 daemon_interval_idle=3
 daemon_interval_active=1
 
+# ============================================================
+# ⑨ 兼容旧版字段（保留，避免旧脚本读不到而报错）
+# ============================================================
 global_spoof_enabled=0
 spoof_serial=0
 spoof_build=0
