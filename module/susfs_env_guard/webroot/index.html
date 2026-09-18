@@ -290,9 +290,12 @@ async function shExec(cmd){
 }
 
 async function act(action){
-  await shExec(`echo "${action}" > ${ACTION_FILE}`);
+  const b64 = btoa(unescape(encodeURIComponent(action)));
+  await shExec(`echo '${b64}' | base64 -d > ${ACTION_FILE}`);
   shExec(`(sh ${DAEMON} --once >/dev/null 2>&1 &)`);
   toast("已下发："+action);
+  selAInitialized = false;
+  selBInitialized = false;
   setTimeout(refresh, 300);
   setTimeout(refresh, 800);
   setTimeout(refresh, 2000);
@@ -490,9 +493,25 @@ function toggleB(p,on){
 }
 
 function saveHide(){
-  const listA = [...selA].join(",");
-  const listB = [...selB].join(",");
-  act(`save_hide:${listA}|${listB}`);
+  const listA = [...selA];
+  const listB = [...selB];
+
+  const installed = new Set((allPkgs || []).map(p => p.packageName));
+  const missingA = listA.filter(p => !installed.has(p));
+  const missingB = listB.filter(p => !installed.has(p));
+
+  if (missingA.length) {
+    alert("A（检测方）未安装：\n" + missingA.join("\n"));
+    return;
+  }
+  if (missingB.length) {
+    alert("B（被隐藏对象）未安装：\n" + missingB.join("\n"));
+    return;
+  }
+  if (!listA.length) { alert("请至少勾选一个检测方 A"); return; }
+  if (!listB.length) { alert("请至少勾选一个被隐藏对象 B"); return; }
+
+  act(`save_hide:${listA.join(",")}|${listB.join(",")}`);
 }
 
 function renderVerify(){
