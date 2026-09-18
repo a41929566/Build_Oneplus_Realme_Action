@@ -665,7 +665,7 @@ static int hwid_hook_register(void)
 	vfs_read_kp.handler = hwid_handler;
 	vfs_read_kp.entry_handler = hwid_entry;
 	vfs_read_kp.data_size = sizeof(struct hwid_hit);
-	vfs_read_kp.maxactive = 256;
+	vfs_read_kp.maxactive = 64;
 	ret = register_kretprobe(&vfs_read_kp);
 	if (ret < 0) {
 		pr_info(HW_LOG_PREFIX "vfs_read probe unavailable (%d)\n", ret);
