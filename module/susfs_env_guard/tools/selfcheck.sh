@@ -1,21 +1,14 @@
 #!/system/bin/sh
-# SUSFS Env Guard v6.4 - 自检诊断
-# 输出：stdout 文本 + selfcheck_result.json + selfcheck_items.tsv
-
+# SUSFS Env Guard v6.5 - 自检诊断
 . "${0%/*}/lib_common.sh"
 
-# 兜底：确保 SUSFS_JSON 有定义
 SUSFS_JSON="${SUSFS_JSON:-/data/adb/ksu/.susfs.json}"
-
 ITEM_FILE="$RUN_DIR/selfcheck_items.tsv"
 : > "$ITEM_FILE"
 
 PASS=0; WARN=0; FAIL=0
 
-decl_item() {
-    printf '%s\t%s\n' "$1" "$2" >> "$ITEM_FILE"
-}
-
+decl_item() { printf '%s\t%s\n' "$1" "$2" >> "$ITEM_FILE"; }
 ok(){  PASS=$((PASS+1)); decl_item ok   "$*"; }
 wn(){  WARN=$((WARN+1)); echo "[WARN] $*"; decl_item warn "$*"; }
 no(){  FAIL=$((FAIL+1)); echo "[FAIL] $*"; decl_item fail "$*"; }
@@ -25,11 +18,8 @@ is_on() {
     case "$1" in 1|Y|y|true|TRUE|on|ON) return 0;; *) return 1;; esac
 }
 
-echo "===== SUSFS Env Guard v6.4 自检 $(date) ====="
+echo "===== SUSFS Env Guard v6.5 自检 $(date) ====="
 
-# ============================================================
-# 1. 文件完整性
-# ============================================================
 echo "--- 文件完整性 ---"
 for f in post-fs-data.sh service.sh module.prop sepolicy.rule \
          tools/lib_common.sh tools/props_spoof.sh tools/randomize.sh \
@@ -47,9 +37,6 @@ for f in post-fs-data.sh service.sh module.prop sepolicy.rule \
 done
 [ -f "$CONF" ] && ps_ "配置文件存在 $CONF" || wn "配置文件缺失（用默认）"
 
-# ============================================================
-# 2. 属性伪装（安全区）
-# ============================================================
 echo "--- 属性伪装（安全区） ---"
 init_feature_flags
 PROPS_ON=$(get_config spoof_props_enabled 0)
@@ -80,9 +67,6 @@ else
     wn "属性伪装未启用（显示真值属预期）"
 fi
 
-# ============================================================
-# 3. 引导状态伪装
-# ============================================================
 echo "--- 引导状态伪装（内核层） ---"
 BC=$(cat /proc/bootconfig 2>/dev/null | tr '\n' ' ')
 case "$BC" in
@@ -99,16 +83,11 @@ fi
 VB_PROP=$(getprop ro.boot.verifiedbootstate)
 ps_ "ro.boot.verifiedbootstate=$VB_PROP（属性层不改，交给内核重定向）"
 
-# ============================================================
-# 4. 硬件只读 ID（v6.4: 修复 hwid 假值检查逻辑）
-# ============================================================
 echo "--- 硬件只读 ID ---"
 if [ -f "$HWID_SYSFS/hwid_enabled" ]; then
     HE=$(cat "$HWID_SYSFS/hwid_enabled" 2>/dev/null)
     if [ "$HWID_ON" = 1 ] && is_on "$HE"; then
         HS=$(cat "$HWID_SYSFS/hwid_status" 2>/dev/null)
-        # v6.4: hwid_status 只暴露 enabled/hook_active/scope_uids，不再暴露假值
-        # 所以这里检查 hook_active + enabled，不检查假值本身
         if echo "$HS" | grep -q 'enabled=1' && echo "$HS" | grep -q 'hook_active=1'; then
             ps_ "hwid hook 已注册且参数已启用"
         else
@@ -128,7 +107,7 @@ if [ -f "$HWID_SYSFS/hwid_enabled" ]; then
                     || no "WiFi OUI != BT OUI（不自洽）"
             fi
         else
-            no "fake_profile.conf 不存在（hwid 未生成假值）"
+            no "fake_profile.conf 不存在"
         fi
     else
         wn "hwid_spoof 未使能（enabled=$HE）"
@@ -137,9 +116,6 @@ else
     wn "内核无 hwid_spoof"
 fi
 
-# ============================================================
-# 5. pkgmask
-# ============================================================
 echo "--- pkgmask ---"
 if [ -d "$PKG_SYSFS" ]; then
     DU=$(cat "$PKG_SYSFS/deny_uids" 2>/dev/null)
@@ -166,9 +142,6 @@ else
     no "内核无 pkgmask"
 fi
 
-# ============================================================
-# 6. SUSFS 用户态配置
-# ============================================================
 echo "--- SUSFS ---"
 if [ -f "$SUSFS_JSON" ]; then
     ps_ "SUSFS .susfs.json 存在"
@@ -193,33 +166,25 @@ else
     no "SUSFS .susfs.json 不存在（$SUSFS_JSON）"
 fi
 
-# ============================================================
-# 7. 守护进程
-# ============================================================
 echo "--- 守护进程 ---"
 if [ -f "$RUN_DIR/daemon.pid" ]; then
     DP=$(cat "$RUN_DIR/daemon.pid" 2>/dev/null)
     case "$DP" in
         ''|*[!0-9]*)
-            no "守护进程 pid 文件内容非法（$DP）"
+            wn "守护进程 pid 内容非法（$DP）"
             ;;
         *)
             if [ -d "/proc/$DP" ]; then
                 ps_ "守护进程运行 PID=$DP"
             else
-                # daemon 是后台进程，可能被系统杀过。只要 pid 文件存在且合法，就只 WARN
-                wn "守护进程 pid=$DP 已退出（文件存在，可能被系统杀过）"
+                wn "守护进程 pid=$DP 已退出（可能被系统杀过）"
             fi
             ;;
     esac
 else
-    # 首次开机、run.sh 未跑完时可能还没 pid 文件。这里只 WARN，不 FAIL
     wn "守护进程尚未启动（无 pid 文件）"
 fi
 
-# ============================================================
-# 8. 启动历史（v6.4-opt2: 时间窗口启动计数器）
-# ============================================================
 echo "--- 启动历史 ---"
 BOOT_HISTORY_FILE="$DATA_DIR/boot_history.txt"
 if [ -f "$BOOT_HISTORY_FILE" ]; then
@@ -236,9 +201,6 @@ else
     ps_ "无启动历史文件（开机 5 分钟后自动清空）"
 fi
 
-# ============================================================
-# 汇总
-# ============================================================
 echo "===== 汇总 PASS=$PASS WARN=$WARN FAIL=$FAIL ====="
 cat > "$DATA_DIR/selfcheck_result.json" << EOF
 { "timestamp": "$(date +%s)", "pass": $PASS, "warn": $WARN, "fail": $FAIL,
