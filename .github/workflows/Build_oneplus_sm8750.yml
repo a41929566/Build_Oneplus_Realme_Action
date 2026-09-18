@@ -842,17 +842,21 @@ jobs:
 
       - name: 📦 Package SUSFS Env Guard module (打包 SUSFS 模块)
         run: |
-          cd module
+          cd module/susfs_env_guard
           # 统一脚本可执行权限
           find . -type f -name "*.sh" -exec chmod 755 {} \;
-          chmod 755 customize.sh post-fs-data.sh service.sh uninstall.sh action.sh webui.sh 2>/dev/null || true
           chmod 755 tools/*.sh 2>/dev/null || true
-          # 打包成标准 KSU/Magisk 模块 zip
-          zip -qr ../susfs_env_guard.zip . -x "*.git*" -x "*__pycache__*"
-          cd ..
+          # 在模块目录内打包：zip 根目录直接是 module.prop / customize.sh
+          rm -f ../../susfs_env_guard.zip
+          zip -qr ../../susfs_env_guard.zip . -x "*.git*" -x "*__pycache__*"
+          cd ../..
+          echo "=== zip 内文件列表（前 30 项）==="
+          unzip -l susfs_env_guard.zip | head -30
+          # 硬校验：关键文件必须在 zip 根目录
+          unzip -l susfs_env_guard.zip | grep -qE " module\.prop$" || { echo "FATAL: module.prop 不在 zip 根"; exit 1; }
+          unzip -l susfs_env_guard.zip | grep -qE " customize\.sh$" || { echo "FATAL: customize.sh 不在 zip 根"; exit 1; }
+          unzip -l susfs_env_guard.zip | grep -qE " service\.sh$" || { echo "FATAL: service.sh 不在 zip 根"; exit 1; }
           ls -lh susfs_env_guard.zip
-          # 校验关键文件是否在包内
-          unzip -l susfs_env_guard.zip | grep -E "module.prop|customize.sh|service.sh" || exit 1
 
       - name: 📤 Upload SUSFS Env Guard module (上传 SUSFS 模块)
         uses: actions/upload-artifact@v6
