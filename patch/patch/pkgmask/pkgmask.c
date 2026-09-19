@@ -556,6 +556,161 @@ static void unregister_proc_comm_hook(void)
 	memset(&proc_comm_kp, 0, sizeof(proc_comm_kp));
 }
 
+/* ---------------- B 层：proc_pid_lookup + pid_revalidate kretprobe ----------------
+ * 让 stealth pid 的 /proc/<pid> 目录直接返回 -ENOENT。
+ * 比 ksys_read/cmdline 安全：不 fdget、不抢 files->file_lock、不是 read 热路径。
+ * 热路径是 lookup/revalidate，频率远低于 read。
+ *
+ * proc_pid_lookup(struct inode *dir, struct dentry *dentry, unsigned int flags)
+ *   arm64: regs[0]=inode, regs[1]=dentry, regs[2]=flags
+ *   exit 返回 NULL = -ENOENT
+ *
+ * pid_revalidate(struct dentry *dentry, unsigned int flags)
+ *   arm64: regs[0]=dentry, regs[1]=flags
+ *   exit 返回 0 = d_invalid（触发重新 lookup）
+ */
+static struct kretprobe pid_lookup_kp;
+static struct kretprobe pid_reval_kp;
+static bool pid_lookup_hook_active;
+static bool pid_reval_hook_active;
+static bool hook_pid_lookup = true; /* B层默认开 */
+module_param(hook_pid_lookup, bool, 0600);
+MODULE_PARM_DESC(hook_pid_lookup, "B-layer: hook proc_pid_lookup/pid_revalidate to hide stealth pid dirs");
+
+static int pid_lookup_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+    struct dentry *dentry;
+    const char *name;
+    int lpid = 0;
+
+    if (!hide_proc_enabled || !stealth_count)
+        return 1;
+    if (!hook_pid_lookup)
+        return 1;
+
+    dentry = (struct dentry *)regs->regs[1];
+    if (!dentry || !dentry->d_name.name)
+        return 1;
+    name = dentry->d_name.name;
+    /* d_name.len 护栏：不保证 NULL 结尾，用 len 限长 */
+    if (dentry->d_name.len < 1 || dentry->d_name.len > 11)
+        return 1;
+    if (kstrtoint(name, 10, &lpid) != 0 || lpid <= 0)
+        return 1;
+
+    *(int *)ri->data = lpid;
+    return 0;
+}
+
+static int pid_lookup_exit(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+    int lpid = *(int *)ri->data;
+    struct task_struct *t;
+
+    if (lpid <= 0)
+        return 0;
+
+    rcu_read_lock();
+    t = find_task_by_vpid(lpid);
+    if (t) {
+        if (is_stealth_comm(t->comm) && !reader_is_stealth())
+            regs->regs[0] = 0; /* NULL = -ENOENT */
+    }
+    rcu_read_unlock();
+    return 0;
+}
+
+static int pid_reval_entry(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+    struct dentry *dentry;
+    const char *name;
+    int lpid = 0;
+
+    if (!hide_proc_enabled || !stealth_count)
+        return 1;
+    if (!hook_pid_lookup)
+        return 1;
+
+    dentry = (struct dentry *)regs->regs[0];
+    if (!dentry || !dentry->d_name.name)
+        return 1;
+    name = dentry->d_name.name;
+    if (dentry->d_name.len < 1 || dentry->d_name.len > 11)
+        return 1;
+    if (kstrtoint(name, 10, &lpid) != 0 || lpid <= 0)
+        return 1;
+
+    *(int *)ri->data = lpid;
+    return 0;
+}
+
+static int pid_reval_exit(struct kretprobe_instance *ri, struct pt_regs *regs)
+{
+    int lpid = *(int *)ri->data;
+    struct task_struct *t;
+
+    if (lpid <= 0)
+        return 0;
+
+    rcu_read_lock();
+    t = find_task_by_vpid(lpid);
+    if (t) {
+        if (is_stealth_comm(t->comm) && !reader_is_stealth())
+            regs->regs[0] = 0; /* 0 = d_invalid */
+    }
+    rcu_read_unlock();
+    return 0;
+}
+
+static int register_pid_lookup_hooks(void)
+{
+    int ret;
+
+    memset(&pid_lookup_kp, 0, sizeof(pid_lookup_kp));
+    pid_lookup_kp.kp.symbol_name = "proc_pid_lookup";
+    pid_lookup_kp.entry_handler = pid_lookup_entry;
+    pid_lookup_kp.handler = pid_lookup_exit;
+    pid_lookup_kp.data_size = sizeof(int);
+    pid_lookup_kp.maxactive = 256;
+    ret = register_kretprobe(&pid_lookup_kp);
+    if (ret < 0) {
+        pr_debug(PM_LOG_PREFIX "proc_pid_lookup hook unavailable (%d)\n", ret);
+        memset(&pid_lookup_kp, 0, sizeof(pid_lookup_kp));
+    } else {
+        pid_lookup_hook_active = true;
+    }
+
+    memset(&pid_reval_kp, 0, sizeof(pid_reval_kp));
+    pid_reval_kp.kp.symbol_name = "pid_revalidate";
+    pid_reval_kp.entry_handler = pid_reval_entry;
+    pid_reval_kp.handler = pid_reval_exit;
+    pid_reval_kp.data_size = sizeof(int);
+    pid_reval_kp.maxactive = 256;
+    ret = register_kretprobe(&pid_reval_kp);
+    if (ret < 0) {
+        pr_debug(PM_LOG_PREFIX "pid_revalidate hook unavailable (%d)\n", ret);
+        memset(&pid_reval_kp, 0, sizeof(pid_reval_kp));
+    } else {
+        pid_reval_hook_active = true;
+    }
+
+    return 0;
+}
+
+static void unregister_pid_lookup_hooks(void)
+{
+    if (pid_lookup_hook_active) {
+        unregister_kretprobe(&pid_lookup_kp);
+        pid_lookup_hook_active = false;
+    }
+    if (pid_reval_hook_active) {
+        unregister_kretprobe(&pid_reval_kp);
+        pid_reval_hook_active = false;
+    }
+    memset(&pid_lookup_kp, 0, sizeof(pid_lookup_kp));
+    memset(&pid_reval_kp, 0, sizeof(pid_reval_kp));
+}
+
 /* ---------------- C 层：proc_pid_cmdline_read kretprobe ----------------
  * 直接挂 procfs 自己的 cmdline read handler（kallsyms 已确认存在）。
  * arm64: regs[0]=struct file*, regs[1]=buf, regs[2]=count, regs[3]=ppos。
@@ -865,6 +1020,7 @@ static void unregister_all_hooks(void)
 	unregister_perm_getattr_hooks();
 	unregister_proc_comm_hook();
 	unregister_cmdline_hook();
+	unregister_pid_lookup_hooks();
 }
 static int apply_config(void)
 {
@@ -890,6 +1046,11 @@ static int apply_config(void)
 		register_perm_getattr_hooks();
 	/* 旧 ksys_read kretprobe 疑似 hang 系统，永久隔离。 */
 	unregister_proc_comm_hook();
+	/* B 层：proc_pid_lookup + pid_revalidate（让 stealth pid 目录返回 -ENOENT） */
+	if (hide_proc_enabled && stealth_count && hook_pid_lookup)
+		register_pid_lookup_hooks();
+	else
+		unregister_pid_lookup_hooks();
 	/* C 层：proc_pid_cmdline_read（直接 file，无 fdget/无锁） */
 	if (hide_proc_enabled && stealth_count && hook_cmdline)
 		register_cmdline_hook();
@@ -991,5 +1152,5 @@ module_init(xk7a9f_init);
 module_exit(xk7a9f_exit);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("pkgmask");
-MODULE_DESCRIPTION("pkgmask v5.0 (built-in, ksys_read + stealth process)");
+MODULE_DESCRIPTION("pkgmask v5.1 (built-in, B-layer pid_lookup/revalidate + stealth)");
 //（注：内容由AI生成）
