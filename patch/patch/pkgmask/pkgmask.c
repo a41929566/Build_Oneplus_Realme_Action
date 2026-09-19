@@ -573,7 +573,7 @@ static struct kretprobe pid_lookup_kp;
 static struct kretprobe pid_reval_kp;
 static bool pid_lookup_hook_active;
 static bool pid_reval_hook_active;
-static bool hook_pid_lookup = true; /* B层默认开 */
+static bool hook_pid_lookup = false; /* B层默认关：GKI6.6 kretprobe lookup 路径 hang */
 module_param(hook_pid_lookup, bool, 0600);
 MODULE_PARM_DESC(hook_pid_lookup, "B-layer: hook proc_pid_lookup/pid_revalidate to hide stealth pid dirs");
 
