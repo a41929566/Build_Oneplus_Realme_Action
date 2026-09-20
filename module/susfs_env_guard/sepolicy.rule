@@ -1,0 +1,49 @@
+# ===== 本模块：守护/工具运行所需（最小化） =====
+# 守护进程读取应用数据目录属主以解析 uid（stat）
+allow magisk app_data_file dir { read open getattr search }
+allow magisk app_data_file file { read open getattr }
+allow ksu app_data_file dir { read open getattr search }
+allow ksu app_data_file file { read open getattr }
+allow apd app_data_file dir { read open getattr search }
+allow apd app_data_file file { read open getattr }
+
+# ===== 内核 sysfs 节点写入（pkgmask / hwid_spoof） =====
+# 这些节点由内核模块 pkgmask 暴露，脚本需要写入来控制伪装
+allow magisk sysfs dir { read write open getattr search add_name }
+allow magisk sysfs file { read write open getattr }
+allow ksu sysfs dir { read write open getattr search add_name }
+allow ksu sysfs file { read write open getattr }
+allow apd sysfs dir { read write open getattr search add_name }
+allow apd sysfs file { read write open getattr }
+
+# ===== ksu_susfs 持久化配置读写（.susfs.json） =====
+allow magisk ksu_file file { read write open create getattr }
+allow ksu ksu_file file { read write open create getattr }
+allow magisk app_data_file file { create write }
+allow ksu app_data_file file { create write }
+allow apd app_data_file file { create write }
+
+
+type zygisk_file file_type
+typeattribute zygisk_file mlstrustedobject
+allow zygote zygisk_file sock_file {read write}
+allow zygote magisk lnk_file read
+allow zygote unlabeled file {read open}
+allow zygote zygote capability sys_chroot
+allow zygote su dir search
+allow zygote su {lnk_file file} read
+allow zygote adb_data_file dir search
+allow zygote zygote process execmem
+allow system_server system_server process execmem
+allow zygote tmpfs file *
+allow zygote appdomain_tmpfs file *
+allow zygote proc file *
+allow zygote nsfs file *
+
+# Per-App Props：zygote 读取根目录标记与配置
+allow zygote rootfs file { read open getattr }
+allow zygote rootfs dir search
+
+# Per-App Props：post-fs-data 阶段（4域覆盖）创建根目录标记
+allow { magisk ksu apd su } rootfs file { create write open getattr }
+allow { magisk ksu apd su } rootfs dir { create add_name write search }
