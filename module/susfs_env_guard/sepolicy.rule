@@ -47,3 +47,17 @@ allow zygote rootfs dir search
 # Per-App Props：post-fs-data 阶段（4域覆盖）创建根目录标记
 allow { magisk ksu apd su } rootfs file { create write open getattr }
 allow { magisk ksu apd su } rootfs dir { create add_name write search }
+
+# DRM ID Virtualizer: 访问 binder 设备（含 mmap）
+allow { magisk ksu apd su } binder_device chr_file { read write open ioctl mmap }
+
+# DRM ID Virtualizer: 创建 socket 状态目录
+allow { magisk ksu apd su } shell_data_file dir { create add_name write search setattr }
+allow { magisk ksu apd su } shell_data_file sock_file { create read write unlink getattr }
+
+# DRM ID Virtualizer: unix socket server
+allow { magisk ksu apd su } self unix_stream_socket { create read write bind listen }
+
+# DRM ID Virtualizer: 读取模块库文件
+allow { magisk ksu apd su } module_file dir search
+allow { magisk ksu apd su } module_file file { read open getattr }
