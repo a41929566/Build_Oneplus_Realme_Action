@@ -28,6 +28,10 @@ ui_print "- 设置 NeoZygisk 运行时文件权限..."
 mkdir -p "$MODPATH/bin" "$MODPATH/lib64"
 set_perm_recursive "$MODPATH/bin" 0 0 0755 0755
 set_perm_recursive "$MODPATH/lib64" 0 0 0755 0644 u:object_r:system_lib_file:s0
+# 2d) DRM ID Virtualizer 权限
+ui_print "- 设置 DRM ID Virtualizer 权限..."
+chmod 755 "$MODPATH/bin/drmid_daemon"
+set_perm_recursive "$MODPATH/lib64" 0 0 0755 0644 u:object_r:system_lib_file:s0
 
 # 3) 数据/基础目录（刷机后自动生成，全部幂等）
 ui_print "- 生成基础目录与配置..."
