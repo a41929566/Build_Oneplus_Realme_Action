@@ -89,4 +89,15 @@ log 2 "service.sh start, boot_in_window=$count"
     ) &
 ) &
 
+# --- DRM ID Virtualizer 启动 ---
+if ! pgrep -f drmid_daemon > /dev/null 2>&1; then
+    MODDIR=${0%/*}
+    mkdir -p /data/local/tmp/drmid_probe_state 2>/dev/null
+    chmod 755 /data/local/tmp/drmid_probe_state 2>/dev/null
+    export DRMID_MODULE_PRIVATE_DIR="$MODDIR/lib64"
+    export DRMID_CONTROL_SOCKET_PATH="/data/local/tmp/drmid_probe_state/drmid_control_v5.sock"
+    "$MODDIR/bin/drmid_daemon" >> /dev/kmsg 2>&1 &
+    echo "[drmid] daemon started pid=$!" >> /dev/kmsg
+fi
+
 exit 0
