@@ -111,6 +111,12 @@ do_apply() {
     fi
     w allow_uids ""
     if [ -n "$paths" ]; then
+        # 内核 MAX_HIDE_TARGETS=64，超出部分会被静默丢弃 —— 必须显式告警，
+        # 否则 selfcheck 只看「target_paths 已配置」照样 PASS，给用户虚假信心
+        local np
+        np=$(echo "$paths" | tr ',' '\n' | grep -c .)
+        [ "$np" -gt 64 ] && \
+            log 0 "pkgmask: target_paths=$np 超过内核上限 64，超出部分会被静默丢弃！请减少隐藏目标或合并同 inode 别名(/data/data 与 /data/user/0)"
         w target_paths "$paths"
     else
         log 1 "pkgmask: target_paths 为空，跳过写入"

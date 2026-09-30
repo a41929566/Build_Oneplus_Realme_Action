@@ -7,8 +7,24 @@ MODDIR=${0%/*}
 TMP_PATH=/data/adb/neozygisk
 
 # --- pkgmask 段（不阻断）---
-if [ -f "/sys/module/pkgmask/parameters/hidden_procs" ]; then
-    echo "" > /sys/module/pkgmask/parameters/hidden_procs 2>/dev/null
+# 修正：驱动实际节点是 hide_proc_names；hidden_procs 参数不存在，旧写法恒假（死代码）
+if [ -f "/sys/module/pkgmask/parameters/hide_proc_names" ]; then
+    echo "" > /sys/module/pkgmask/parameters/hide_proc_names 2>/dev/null
+fi
+
+# --- SUSFS 早注册：堵住开机检测窗口 ---
+# cmdline/bootconfig/sus_path 不依赖包管理与 settings 服务，可在 zygote 前完成；
+# 依赖 uid 解析的 pkgmask、依赖 settings 的 props 仍留在 service 阶段。
+mkdir -p "$MODDIR/run" 2>/dev/null
+if [ -x /data/adb/ksu/bin/ksu_susfs ] || [ -x /data/adb/ksud/bin/ksu_susfs ] || [ -x /data/adb/modules/susfs4ksu/bin/ksu_susfs ]; then
+    # 同步执行 + timeout 上限：post-fs-data 结束即启动 zygote，
+    # 用 & 后台跑不保证在 zygote 前完成，H8 的窗口就没真正堵死。
+    # susfs_fix 内部不等 boot_completed（那是 run.sh 的事），同步执行安全。
+    timeout 10 sh "$MODDIR/tools/susfs_fix.sh" apply >> "$MODDIR/run/early_susfs.log" 2>&1
+    echo "[susfs_env_guard] early susfs_fix done" >> /dev/kmsg
+else
+    # 没有这条日志就无法区分「注册成功」与「根本没跑」，会让 H8 验收误判
+    echo "[susfs_env_guard] ksu_susfs MISSING, early registration SKIPPED" >> /dev/kmsg
 fi
 
 # --- Zygisk Next 冲突检测（安全网）---

@@ -116,6 +116,10 @@ do_apply() {
             rp_set vendor.boot.vbmeta.device_state  "locked"
             rp_set vendor.boot.flash.locked         "1"
         fi
+        # OEM 特定锁状态属性：按「存在性」设置，避免在无此属性的机型上凭空造值
+        # realme GT 系列 / 一加 OPPO 系检测点，缺失会导致通用属性伪装得再干净也穿帮
+        [ -n "$(getprop ro.boot.realmebootstate)" ] && rp_set ro.boot.realmebootstate "green"
+        [ -n "$(getprop ro.secureboot.lockstate)" ] && rp_set ro.secureboot.lockstate "locked"
         cat /proc/sys/kernel/random/boot_id > "$L2_MARKER" 2>/dev/null
         log 2 "props_spoof L2: boot-completed, applied ro.boot.* spoof"
 
@@ -149,6 +153,7 @@ do_restore() {
             for p in ro.boot.verifiedbootstate ro.boot.flash.locked \
                      ro.boot.vbmeta.device_state ro.boot.veritymode \
                      ro.boot.selinux \
+                     ro.boot.realmebootstate ro.secureboot.lockstate \
                      vendor.boot.verifiedbootstate \
                      vendor.boot.vbmeta.device_state \
                      vendor.boot.flash.locked; do

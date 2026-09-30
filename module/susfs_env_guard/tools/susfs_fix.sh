@@ -21,7 +21,26 @@ done
 D="$MODDIR/config"
 F="$D/cmdline_fake.txt"
 B="$D/bootconfig_spoof.txt"
+BC_GEN="$DATA_DIR/bootconfig_fake"
 USER_PATHS_FILE="$DATA_DIR/user_hidden_paths.txt"
+
+# 从真机 /proc/bootconfig 动态生成：只替换敏感字段，保留设备特有值。
+# 目的：① 避免全机型共用同一 serialno/vbmeta.digest 造成「整体 hash 即黑名单」
+#       ② 避免 MT6991 机型被重定向成 qcom 模板（bootconfig 说高通、属性说联发科的矛盾）
+gen_bootconfig() {
+    local dst="$1"
+    : > "$dst" 2>/dev/null
+    if [ -r /proc/bootconfig ]; then
+        sed -E \
+            -e 's/(verifiedbootstate[ ]*=[ ]*)"[^"]*"/\1"green"/g' \
+            -e 's/(device_state[ ]*=[ ]*)"[^"]*"/\1"locked"/g' \
+            -e 's/(selinux[ ]*=[ ]*)"[^"]*"/\1"enforcing"/g' \
+            -e 's/(veritymode[ ]*=[ ]*)"[^"]*"/\1"enforcing"/g' \
+            /proc/bootconfig > "$dst" 2>/dev/null
+    fi
+    # 动态生成不可用（无 /proc/bootconfig 或结果为空）时回退静态模板
+    [ -s "$dst" ] || cp -f "$B" "$dst" 2>/dev/null
+}
 
 # ---------- 1) cmdline 伪装 ----------
 cat /proc/cmdline | tr '\n' ' ' | sed '
@@ -36,11 +55,18 @@ cp "$F" "$D/cmdline_spoof.txt"
 
 # ---------- 2) bootconfig 伪装 ----------
 [ -s "$B" ] || { echo "SUSFS_FIX=NO_BOOTCONFIG_TEMPLATE"; exit 1; }
+gen_bootconfig "$BC_GEN"
+[ -s "$BC_GEN" ] || { echo "SUSFS_FIX=BOOTCONFIG_GEN_FAILED"; exit 1; }
+if [ -r /proc/bootconfig ]; then
+    log 2 "susfs_fix: bootconfig 动态生成（保留设备特有值）"
+else
+    log 1 "susfs_fix: /proc/bootconfig 不可读，回退静态模板（各机型将共用 serialno/digest）"
+fi
 
 # ---------- 3) 注册 cmdline/bootconfig 重定向 ----------
 "$KS" config cmdline_or_bootconfig remove 2>/dev/null
-"$KS" config cmdline_or_bootconfig add "$B" 2>/dev/null
-"$KS" set_cmdline_or_bootconfig "$B" 2>/dev/null
+"$KS" config cmdline_or_bootconfig add "$BC_GEN" 2>/dev/null
+"$KS" set_cmdline_or_bootconfig "$BC_GEN" 2>/dev/null
 
 "$KS" config open_redirect remove /proc/cmdline 2>/dev/null
 "$KS" config open_redirect add /proc/cmdline "$F" 3 2>/dev/null
@@ -62,9 +88,17 @@ collect_paths() {
         /data/adb/zygisk \
         /data/adb/modules/rezygisk \
         /data/adb/modules/zygisk-assistant \
+        /data/adb/modules/zygisk-next \
+        /data/adb/modules/tricky_store \
         /data/adb/modules/teesimulator \
         /data/adb/modules/teesimulator-rs \
         /data/adb/modules/playintegrityfix \
+        /sys/module/pkgmask \
+        /sys/module/hwid_spoof \
+        /.managed_by_skp_rezygisk \
+        /.rezygisk-runtime \
+        /.per-app-props \
+        /.per_app_props_features \
         /data/adb/modules/kpatch-next \
         /system/bin/su \
         /system/xbin/su \
@@ -93,6 +127,7 @@ hide_common_paths() {
     local ks="$1"
     local tmplist="$RUN_DIR/.sus_paths.tmp"
     local p
+    local n=0
 
     collect_paths > "$tmplist" 2>/dev/null
 
@@ -102,10 +137,18 @@ hide_common_paths() {
         p="${p%/}"
         [ -z "$p" ] && continue
         [ -e "$p" ] || continue
-        # 幂等 add；失败不阻断
-        "$ks" config sus_path add "$p" --loop 2>/dev/null || \
-            "$ks" add_sus_path_loop "$p" 2>/dev/null || true
+        # 幂等 add；单条失败不阻断，但必须计数——
+        # SUSFS sus_path 也有列表上限，超限会被静默丢弃（原先被 2>/dev/null 吞掉）
+        if ! { "$ks" config sus_path add "$p" --loop 2>/dev/null || \
+               "$ks" add_sus_path_loop "$p" 2>/dev/null; }; then
+            n=$((n + 1))
+        fi
     done < "$tmplist"
+
+    if [ "$n" -gt 0 ]; then
+        echo "SUSFS_PATH_FAIL=$n"
+        log 0 "susfs_fix: $n 条路径注册失败（可能超过 SUSFS sus_path 列表上限，需减少 PATH_HIDE_EXTRA/用户路径）"
+    fi
 
     rm -f "$tmplist"
 }

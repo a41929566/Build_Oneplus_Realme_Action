@@ -55,7 +55,8 @@ if [ -d /sys/module/pkgmask/parameters ]; then
 else
     ui_print "! pkgmask: missing (package masking unavailable)"
 fi
-if [ -f /sys/module/pkgmask/parameters/hwid_enabled ]; then
+# 修正：hwid 参数实际位于独立的 hwid_spoof 目录（旧写法只查 pkgmask 目录，必然误报 missing）
+if [ -f /sys/module/hwid_spoof/parameters/hwid_enabled ] || [ -f /sys/module/pkgmask/parameters/hwid_enabled ]; then
     ui_print "- hwid_spoof: detected"
 else
     ui_print "! hwid_spoof: missing (read-only ID interception unavailable)"
