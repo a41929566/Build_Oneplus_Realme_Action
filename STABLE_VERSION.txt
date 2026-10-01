@@ -1,0 +1,4 @@
+v1.0-stable
+日期：2026-09-17
+状态：所有功能正常开机
+包含：ReSukiSU + SUSFS + pkgmask v5.1(B层 perm/getattr 已启用) + hwid_spoof v4(ksys_read hook，vfs_read 被 LTO 内联) + has_deny_ancestor(depth 3) + BBG + ADIOS + SCX + hmbird(GKI) + 屏幕闪烁修复
