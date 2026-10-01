@@ -1,0 +1,84 @@
+name: 清理全部ccache缓存
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: "输入DELETE确认清理所有缓存"
+        required: true
+        default: ""
+
+jobs:
+  clean-caches:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    
+    steps:
+      - name: 验证确认输入
+        if: ${{ github.event.inputs.confirm != 'DELETE' }}
+        run: |
+          echo "::error::必须输入DELETE确认清理操作!"
+          exit 1
+      
+      - name: 获取并删除所有缓存
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            let totalDeleted = 0;
+
+            // 【必须先收集再删除】
+            // 旧实现是「边翻页边删除」，这会让分页索引错位：删掉第 1 页的 100 条
+            // 之后，原本属于第 2 页的缓存前移到第 1 页，而循环已经把 page 递增到 2，
+            // 于是这部分永远不会被访问到 —— 静默漏删。
+            // 例：共 250 条时，page1 删 100 -> 剩 150；page2 返回的是原 201~250
+            // （50 条）-> 删完剩 100 条残留；因 list.length(50) < 100 直接 break，
+            // 最终只删 150/250 却报告成功。
+            // 正确做法：先按分页把全部目标 ID 收集完，再逐个删除（ID 稳定，删除不影响遍历）。
+            const targets = [];
+            let page = 1;
+            while (true) {
+              const caches = await github.rest.actions.getActionsCacheList({
+                owner,
+                repo,
+                per_page: 100,
+                page
+              });
+
+              const list = caches.data.actions_caches || [];
+              for (const cache of list) {
+                if (cache.key.startsWith('ccache-')) {
+                  targets.push({ id: cache.id, key: cache.key });
+                }
+              }
+
+              if (list.length < 100) break;
+              page++;
+            }
+
+            console.log(`匹配到 ${targets.length} 个 ccache-* 缓存`);
+            for (const { id, key } of targets) {
+              console.log(`删除缓存: ${key}`);
+              await github.rest.actions.deleteActionsCacheById({
+                owner,
+                repo,
+                cache_id: id
+              });
+              totalDeleted++;
+            }
+
+            return `成功删除 ${totalDeleted} 个缓存`;
+
+      - name: 重置环境
+        run: |
+          rm -rf $HOME/.ccache/*
+          rm -rf $HOME/.ccache*
+          sudo apt clean
+          sudo journalctl --vacuum-time=1s
+          sudo rm -rf /var/log/*
+          docker system prune -af || true
+          sudo rm -rf /tmp/*
+          echo "容器环境已重置！"
+          echo "清理后空间:"
+          df -h
